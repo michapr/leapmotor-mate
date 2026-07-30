@@ -3,6 +3,42 @@
 All notable changes to LeapMotor Mate are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.19.0] — 2026-07-30
+
+### Added
+- **A trip's own map now marks where you charged at the end of it.** Same amber marker as the Map's stations, with a popup carrying the kWh, the cost and a link straight to the charge. What counts as "this trip's stop" is a time window — from this trip's end to the moment the car next moved — so no GPS guesswork is involved: the car cannot have charged anywhere else in between. Charges at your own wallbox are left out, or every drive home would earn a "charging stop" for parking in the driveway.
+- **‹ › buttons on a trip, to step to the one before or after.** Chronological, through the same trips the Trips list shows: a merged trip has no page of its own, so the arrows skip past it to somewhere you can actually land. A trip with nothing on one side simply doesn't show that arrow.
+- **The Map's station cap is adjustable from the map itself.** It has always drawn the 15 busiest spots; someone who charges in many one-off places could see an older single visit pushed out by newer ones. A small box on the legend row now sets it — 0 shows them all. Both features and the box come from **@hubcasale** (#195).
+
+### Fixed
+- A charge the car reported with **no GPS fix** is stored as latitude 0, longitude 0 — which is not the same as *missing*, and the new trip marker took it at face value: on the test data one landed **5 132 km** away, in the Gulf of Guinea, on a trip that never left Milan. It now uses the same guard the Map's station cluster has always used, where 0 counts as absent.
+- The station-count box saves through a POST rather than a URL parameter. A page that writes a stored preference just by being loaded gets re-triggered by every bookmark, Back button and link prefetch that touches it — and on an install two people share, one person's link would change the other's map. The value is clamped too, like the marker-threshold setting next to it.
+
+## [2.18.0] — 2026-07-30
+
+### Added
+- **The Charges page now tells you what a kWh actually costs you.** A sixth card next to the totals: your spend divided by the energy you paid for, quoted to three decimals — the one number that turns "I spent 101 €" into something you can compare against a tariff, a public charger or a litre of petrol. Asked for by **@adoewa** in #187, and it turned out he was asking for something Mate could already work out but only showed one month at a time, on another page.
+- The card says what it covers. A charge with no cost yet — one you haven't tagged, or of a type you haven't priced — still has kWh, so leaving it in the division would report a price lower than the one you pay. It is left out, and a line under the number says so: *"25 of 26 sessions"*. Without that line the page would show a total energy and a total spend that divide into a **different** number from the one printed beside them, and nothing to explain the gap.
+
+### Fixed
+- **The monthly Report's "Avg price" was under-reporting, sometimes badly.** It divided the month's spend by the month's *total* energy, unpriced charges included. On the test data a single untagged charge out of ten was enough to show **0.199 €/kWh** for a month whose real price was **0.250** — a fifth off, and plausible enough that nobody would question it. Both places now compute the average the same way, from one function, so they cannot drift apart.
+- The Report also quoted that price with two decimals, which flattens 0.250 and 0.199 onto 0.25 and 0.20 — hiding both the error and the correction. Prices per kWh now keep three decimals, like the per-litre prices already did.
+
+## [2.17.0] — 2026-07-29
+
+### Added
+- **You can now type a charging station's name yourself.** Every station name in Mate comes from OpenStreetMap and Open Charge Map, and some real stations are in neither: a company car park or any charger behind a barrier is invisible to both **by design**, so the 🔄 lookup could only ever come back empty on them — exactly **@adoewa**'s case in #193. A **✏️** button next to the lookup opens a small field: type the name, press ✓, done. It opens pre-filled with the current name, so it doubles as a quick correction; an empty submission changes nothing; and a typed name takes the charge out of the background lookup queue exactly like a found one would. One thing worth knowing: 🔄 still re-runs the database lookup and replaces the name when it finds exactly one match — press it only when a re-lookup is what you want. Written overnight by **@hubcasale** (#194), on top of yesterday evening's release, with all six languages covered.
+
+## [2.16.0] — 2026-07-29
+
+### Added
+- **The Scheduling page now says what your car is actually doing, before the form that changes it.** Both cards open with a line in plain words — *"Charges every day from 00:50 to 12:00, up to 100%"*, *"Quick cool once only at 07:00, 18°C"* — built from the car's own answer, with no extra call. **@riri19** selected all seven days of his charge schedule, saw the chips empty again after a reload and reported the schedule as lost (#190). Nothing was lost: on that card **no day selected means every day**, which is also the state every car leaves the factory in, so the row is empty for almost everyone. The chips still work the way they did — you pick the days you want rather than deselecting six of seven — but now the card says what the empty row means.
+- The same line on the **climate** card, where it was needed more: an empty day row there means the **opposite** — one time only, not every day. Two cards, one under the other, identical rows of chips, opposite meanings, and nothing on screen to tell them apart. It also spells out the mode ("Quick cool" rather than a payload), the time and the temperature, and says plainly when nothing is scheduled at all.
+- **A charge found by search now shows its date.** In the calendar the day is the heading above the cards; a search result stands alone, and it showed only "16:38 → 16:42". **@riri19** looked up a station by name and had to go back to the calendar to find out which day it was (#191). Same date format the history uses. Unchanged in the calendar, which already says it once.
+
+### Changed
+- The litres on a detected refuel now say they are yours to overwrite: *"gauge estimate — replace it with the litres on your receipt"*. The box was always editable, and the amber "≈ 35.15 L" above it reads like a figure the car produced, so people leave it. **@gm27271** worked out the consequence before hitting it: confirm 9 litres against a 10-litre receipt and the price per litre comes out 20/9 rather than the 2.00 actually paid — and that price weights the blend behind every trip that burns from that tankful. Range-extender research builds only.
+
 ## [2.15.0] — 2026-07-29
 
 ### Added

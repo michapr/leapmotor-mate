@@ -26,7 +26,7 @@ import auth
 import security
 import update_check
 
-MATE_VERSION = "2.15.0"  # bump together with the git tag + add-on config.yaml at release
+MATE_VERSION = "2.19.0"  # bump together with the git tag + add-on config.yaml at release
 
 import diagnostics
 import demo
@@ -121,11 +121,12 @@ def _money(x) -> str:
 templates.env.filters["money"] = _money
 
 
-def _price_l(x) -> str:
-    """A per-litre fuel price: fixed 3 decimals with the UI-language decimal separator (comma for
-    it/fr/de, dot for en), no currency symbol \u2014 the template appends ' <sym>/L'. Fuel is quoted to
-    3 decimals (1,858 \u20ac/L): unlike `nice` this keeps them, and unlike a bare number it follows the
-    same comma/dot rule as `money` (a price is a monetary value)."""
+def _price_3(x) -> str:
+    """A UNIT price \u2014 \u20ac/L at the pump, \u20ac/kWh at the plug: fixed 3 decimals with the UI-language
+    decimal separator (comma for it/fr/de, dot for en), no currency symbol \u2014 the template appends
+    ' <sym>/L' or ' <sym>/kWh'. Both are quoted to 3 decimals in the real world (1,858 \u20ac/L,
+    0,250 \u20ac/kWh) and `money`'s 2 would flatten 0,250 and 0,199 onto 0,25 and 0,20. Unlike `nice`
+    this keeps the decimals, and unlike a bare number it follows `money`'s comma/dot rule."""
     if x is None:
         return "\u2014"
     s = f"{float(x):,.3f}"
@@ -133,7 +134,7 @@ def _price_l(x) -> str:
         s = s.translate(str.maketrans({",": ".", ".": ","}))
     return s
 
-templates.env.filters["pricel"] = _price_l
+templates.env.filters["price3"] = _price_3
 
 
 def _localdate(s) -> str:
@@ -638,8 +639,14 @@ async def trip_detail(request: Request, trip_id: int):
     trip = db_reader.get_trip_detail(trip_id)
     if not trip:
         return RedirectResponse(request.headers.get("x-ingress-path", "") + "/trips")
+    # Same server-side currency formatting the Map gives its charging-station popups (main.py's
+    # map_page) — a bare .toFixed(2) in the map script would show "13.00" with no symbol.
+    for c in trip["charges"]:
+        c["cost_fmt"] = _money(c["cost"]) if c.get("cost") is not None else None
+    adjacent = db_reader.get_adjacent_trips(trip_id)
     return templates.TemplateResponse(request, "trip_detail.html", _ctx(
         page="trips", vehicle=vehicle, trip=trip,
+        prev_trip_id=adjacent["prev_id"], next_trip_id=adjacent["next_id"],
     ))
 
 
@@ -1000,6 +1007,13 @@ async def charges_search(request: Request, q: str = "", type: str = "",
         text=q, charge_type=type, cost_min=n_cost_min, cost_max=n_cost_max,
         kwh_min=n_kwh_min, kwh_max=n_kwh_max, date_from=date_from, date_to=date_to,
         station=station or None)
+    # #191 (@riri19): a result card shows "16:38 → 16:42" and nothing else — in the calendar the
+    # day is the heading above it, but a search result stands alone and the day was simply gone.
+    # He searched "Intermarché", found the session, and had to go back to the calendar to learn
+    # WHEN. Same day label the history tree uses, so the two views read alike.
+    for c in charges:
+        dt = db_reader._local_dt(c.get("started_at"))
+        c["date_label"] = i18n.fmt_day_month_year(lang, dt) if dt else None
     today = db_reader.today_local()
     return templates.TemplateResponse(request, "partials/charges_search_results.html", {
         "t": i18n.get_t(lang), "charge_types": db_reader.CHARGE_TYPES, "fmt_dur": _fmt_dur,
@@ -1449,7 +1463,16 @@ async def map_page(request: Request):
         min_sessions = max(1, int(db_reader.get_setting("map_station_min_sessions", "1")))
     except (TypeError, ValueError):
         min_sessions = 1
-    stations = db_reader.get_charging_stations(min_sessions=min_sessions)
+    # How many station markers to draw (get_charging_stations' top_n), set from the box on the
+    # map's own legend row rather than buried in Settings. READ ONLY here — the box POSTs to
+    # save_map_station_count and comes back through a redirect, so the page that renders the
+    # map never writes anything.
+    try:
+        stations_top_n = max(0, int(db_reader.get_setting("map_station_top_n", "15")))
+    except (TypeError, ValueError):
+        stations_top_n = 15
+    stations = db_reader.get_charging_stations(
+        min_sessions=min_sessions, top_n=None if stations_top_n == 0 else stations_top_n)
     # Popup markup is built client-side from this JSON (see map.html), so the currency symbol/
     # placement/decimal-separator formatting `| money` gives every other cost on the site has to be
     # baked in server-side here too — a bare .toFixed(2) in JS would show "13.00" with no symbol.
@@ -1459,6 +1482,7 @@ async def map_page(request: Request):
             c["cost_fmt"] = _money(c["cost"]) if c["cost"] is not None else None
     return templates.TemplateResponse(request, "map.html", _ctx(
         page="map", vehicle=vehicle, track=track, places=places, stations=stations,
+        stations_top_n=stations_top_n,
     ))
 
 
@@ -2555,6 +2579,28 @@ async def cancel_charge_location(request: Request, charge_id: int):
                                       {"charge": charge or {"id": charge_id}, "t": t})
 
 
+@app.post("/api/charges/{charge_id}/locate/manual", response_class=HTMLResponse)
+async def set_manual_charge_location(request: Request, charge_id: int):
+    """✏️ free-text station name — for a station OSM/OCM simply doesn't have (#193:
+    "Where to add stationname"). No coordinates/URL involved, just the label the
+    automatic lookup could never produce on its own. Persists through
+    set_charge_location_name exactly like a picked candidate would — location_name
+    IS NOT NULL either way, so the background sweep (_LOCATION_CANDIDATES_WHERE) never
+    revisits this charge. An empty submission changes nothing (closes the input with
+    whatever was already saved, same as clicking away)."""
+    form = await request.form()
+    name = (form.get("name") or "").strip()[:200]
+    charge = db_reader.get_charge_location(charge_id)
+    if not charge:
+        return HTMLResponse("", status_code=404)
+    if name:
+        db_reader.set_charge_location_name(charge_id, name, None)
+        charge["location_name"], charge["location_url"] = name, None
+    t = i18n.get_t(db_reader.get_language())
+    return templates.TemplateResponse(request, "partials/charge_location.html",
+                                      {"charge": charge, "t": t})
+
+
 def _wallbox_overlay(curve: dict, charge_id: int) -> list | None:
     """Wallbox power (from HA history) resampled onto the car curve's timestamps,
     so it overlays the car's DC power on the same axis. None when unavailable.
@@ -2937,6 +2983,24 @@ async def save_map_station_threshold(request: Request):
     db_reader.set_setting("map_station_min_sessions", str(n))
     t = i18n.get_t(db_reader.get_language())
     return HTMLResponse(f'<span style="color:#22c55e;font-size:13px">{t("map_station_threshold_saved")}</span>')
+
+
+@app.post("/api/settings/map-station-count")
+async def save_map_station_count(request: Request):
+    """How many station markers the Map draws (get_charging_stations' top_n); 0 = all of them.
+    Set from the box on the map's own legend row, but a POST like its twin above — a GET that
+    writes a stored preference is re-applied by every bookmark, Back button and link prefetch
+    that touches the URL, and on a shared install one person's link would change everyone's map.
+    Redirects back to the map (POST-Redirect-GET) so the new marker set is simply what the page
+    renders next. Clamped: the box is the only way in, but a hand-typed number shouldn't be
+    stored verbatim any more than the threshold's 1–10 is."""
+    form = await request.form()
+    try:
+        n = max(0, min(999, int(form.get("top_n") or 0)))
+    except (TypeError, ValueError):
+        n = 15
+    db_reader.set_setting("map_station_top_n", str(n))
+    return RedirectResponse(request.headers.get("x-ingress-path", "") + "/map", status_code=303)
 
 
 @app.post("/api/settings/retention", response_class=HTMLResponse)

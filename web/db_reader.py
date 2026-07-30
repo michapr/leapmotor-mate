@@ -3596,6 +3596,73 @@ def fuel_blended_price_at(vehicle_id: int, ts: str) -> Optional[float]:
         db.close()
 
 
+def get_adjacent_trips(trip_id: int) -> dict:
+    """{prev_id, next_id} — the top-level trip immediately before/after this one in time, for
+    the trip detail page's ←/→ navigation. A merged child resolves to its parent group's
+    started_at first (same as get_trip_detail): children have no place of their own in the
+    Viaggi list, so stepping through them would land on a page that isn't next in that list."""
+    db = _get()
+    row = db.execute("SELECT id, merged_into_id FROM trips WHERE id=? AND vehicle_id = COALESCE(?, vehicle_id)",
+                     (trip_id, _current_vehicle_id())).fetchone()
+    if not row:
+        return {"prev_id": None, "next_id": None}
+    parent_id = row["merged_into_id"] or row["id"]
+    parent = db.execute("SELECT started_at FROM trips WHERE id=? AND vehicle_id = COALESCE(?, vehicle_id)",
+                        (parent_id, _current_vehicle_id())).fetchone()
+    if not parent:
+        return {"prev_id": None, "next_id": None}
+    prev_row = db.execute(
+        "SELECT id FROM trips WHERE vehicle_id = COALESCE(?, vehicle_id) AND merged_into_id IS NULL "
+        "AND started_at < ? ORDER BY started_at DESC LIMIT 1", (_current_vehicle_id(), parent["started_at"])).fetchone()
+    next_row = db.execute(
+        "SELECT id FROM trips WHERE vehicle_id = COALESCE(?, vehicle_id) AND merged_into_id IS NULL "
+        "AND started_at > ? ORDER BY started_at ASC LIMIT 1", (_current_vehicle_id(), parent["started_at"])).fetchone()
+    return {"prev_id": prev_row["id"] if prev_row else None,
+            "next_id": next_row["id"] if next_row else None}
+
+
+def _trip_stop_charges(db, vehicle_id, raw_ended_at) -> list[dict]:
+    """Charges during the stop right after a trip ends — what the trip's own map marks
+    alongside the start/end flags. A charge belongs to THIS trip's stop if it started at/after
+    the trip's end and before the next top-level trip started: nowhere else the car could have
+    been charging in that window, so no separate GPS-proximity check is needed. `raw_ended_at`
+    must be the UN-localized value (trips.started_at is stored the same raw way), or every
+    comparison below silently misses by the local UTC offset.
+
+    Home-wallbox charges are excluded — same _is_home_charge test the general Map's station
+    cluster already uses, so a trip that simply ends back at the driver's own wallbox doesn't
+    get a "charging stop" marker for parking in their own driveway."""
+    if not raw_ended_at:
+        return []
+    nxt = db.execute(
+        "SELECT MIN(started_at) AS s FROM trips WHERE vehicle_id = COALESCE(?, vehicle_id) "
+        "AND merged_into_id IS NULL AND started_at > ?", (vehicle_id, raw_ended_at)).fetchone()
+    hi = nxt["s"] if nxt and nxt["s"] else None
+    q = ("SELECT id, latitude, longitude, location_name, location_url, charge_type, cost, "
+         "energy_added_kwh, ac_energy_kwh, location_type, started_at, ended_at FROM charges "
+         "WHERE vehicle_id = COALESCE(?, vehicle_id) AND ended_at IS NOT NULL "
+         "AND latitude IS NOT NULL AND longitude IS NOT NULL AND started_at >= ?")
+    params = [vehicle_id, raw_ended_at]
+    if hi:
+        q += " AND started_at < ?"
+        params.append(hi)
+    q += " ORDER BY started_at"
+    home = _learned_wallbox_location(vehicle_id)
+    out = []
+    for r in db.execute(q, params).fetchall():
+        c = dict(r)
+        # `not lat or not lon`, the SAME guard get_charging_stations uses — and it is the falsy
+        # test on purpose: a charge the car reported with no GPS fix is stored as 0,0, which is
+        # NOT NULL and would otherwise earn a marker in the Gulf of Guinea (measured: 5 132 km
+        # from the trip it was attached to).
+        if not c.get("latitude") or not c.get("longitude") or _is_home_charge(c, home):
+            continue
+        c["kwh"] = round(_billed_kwh(c), 2)
+        c["started_at"] = _local_iso(c["started_at"])
+        out.append(c)
+    return out
+
+
 def get_trip_detail(trip_id: int) -> Optional[dict]:
     db = _get()
     row = db.execute("SELECT * FROM trips WHERE id = ? AND vehicle_id = COALESCE(?, vehicle_id)",
@@ -3632,6 +3699,9 @@ def get_trip_detail(trip_id: int) -> Optional[dict]:
         elapsed = _gap_minutes(trip_d.get("started_at"), trip_d.get("ended_at"))
         trip_d["stop_min"] = (round(max(elapsed - (trip_d.get("duration_min") or 0), 0))
                               if elapsed is not None else None)
+    # The charge(s) at THIS trip's destination — read before ended_at below is overwritten
+    # with its localized form, since trips.started_at in the DB is stored raw/UTC like it is.
+    trip_d["charges"] = _trip_stop_charges(db, trip["vehicle_id"], trip_d.get("ended_at"))
     trip_d["started_at"] = _local_iso(trip_d.get("started_at"))
     trip_d["ended_at"] = _local_iso(trip_d.get("ended_at"))
 
@@ -4510,6 +4580,24 @@ def _billed_kwh(c) -> float:
     return c.get("energy_added_kwh") or 0
 
 
+def price_coverage(cost_total, kwh_priced, priced_n, total_n) -> dict:
+    """The €/kWh actually paid — over the PRICED charges ALONE — and how much of the period that
+    covers. Single source of truth for the rule, because the obvious shortcut is wrong: a charge
+    with no cost (untyped, or a type with no price configured) still has kWh, so dividing the
+    spend by the period's TOTAL energy silently reports a price LOWER than the one you pay.
+    Measured on a real month before this existed: 0.199 €/kWh on screen against 0.250 real, from
+    ONE untagged charge out of ten.
+
+    The flip side is that `avg_price` is then NOT `total_cost ÷ total_kwh` as those two appear on
+    screen — divide them and you get a third number. Hence `partial`: the caller must SAY what the
+    average was computed over instead of leaving the reader to do that division."""
+    avg = (round(cost_total / kwh_priced, 3)
+           if cost_total is not None and kwh_priced and kwh_priced > 0 else None)
+    priced_n, total_n = priced_n or 0, total_n or 0
+    return {"avg_price": avg, "priced_count": priced_n, "total_count": total_n,
+            "partial": avg is not None and priced_n < total_n}
+
+
 def _filter_by_station(charges: list[dict], station: str) -> list[dict]:
     """Narrow a charge list to the one physical station a "lat,lon" key (3-decimal rounded,
     from get_charging_stations()) identifies. Shared by the accordion, the calendar and
@@ -4750,13 +4838,24 @@ def get_charge_stats() -> dict:
                               THEN ac_energy_kwh ELSE energy_added_kwh END), 2)  AS total_kwh,
                ROUND(AVG(duration_min / 60.0), 1) AS avg_duration_h,
                ROUND(SUM(cost), 2)                AS total_cost,
+               -- the SAME billed energy, but only over the charges that HAVE a cost: the €/kWh
+               -- divides by this, never by total_kwh (see price_coverage)
+               COUNT(cost)                        AS priced_count,
+               ROUND(SUM(CASE WHEN cost IS NOT NULL THEN
+                              CASE WHEN location_type='HOME' AND ac_energy_kwh IS NOT NULL AND ac_energy_kwh > 0
+                                   THEN ac_energy_kwh ELSE energy_added_kwh END END), 2) AS priced_kwh,
                ROUND(AVG(end_soc - start_soc), 1) AS avg_soc_delta,
                ROUND(MAX(max_power_kw), 2)        AS peak_power_kw
            FROM charges
            WHERE vehicle_id = COALESCE(?, vehicle_id) AND ended_at IS NOT NULL""",
         (_current_vehicle_id(),)
     ).fetchone()
-    return dict(row) if row else {}
+    if not row:
+        return {}
+    d = dict(row)
+    d.update(price_coverage(d.get("total_cost"), d.get("priced_kwh"),
+                            d.get("priced_count"), d.get("session_count")))
+    return d
 
 
 def get_ac_dc_stats() -> dict:
@@ -4796,6 +4895,8 @@ def _report_bucket() -> dict:
         "regen_kwh": 0.0, "drive_min": 0.0,
         "_eff_wsum": 0.0, "_eff_wdist": 0.0, "avg_efficiency": None,
         "charge_count": 0, "charge_kwh": 0.0, "charge_cost": 0.0, "has_cost": False,
+        # priced-only twins: the €/kWh denominator (an unpriced charge brings kWh but no €)
+        "charge_count_priced": 0, "charge_kwh_priced": 0.0,
         "unconfirmed": 0,
         "home":   {"count": 0, "kwh": 0.0, "cost": 0.0},
         "public": {"count": 0, "kwh": 0.0, "cost": 0.0},
@@ -4840,6 +4941,8 @@ def _collect_monthly_buckets() -> dict:
         if cost is not None:
             b["charge_cost"] += cost
             b["has_cost"]     = True
+            b["charge_count_priced"] += 1
+            b["charge_kwh_priced"]   += kwh
         grp = b["home"] if lt == "HOME" else (b["public"] if lt else None)
         if grp is not None:
             grp["count"] += 1
@@ -4854,7 +4957,8 @@ def _collect_monthly_buckets() -> dict:
     for b in buckets.values():
         if b["_eff_wdist"] > 0:
             b["avg_efficiency"] = round(b["_eff_wsum"] / b["_eff_wdist"], 1)
-        for k in ("total_km", "total_kwh_used", "regen_kwh", "charge_kwh", "charge_cost"):
+        for k in ("total_km", "total_kwh_used", "regen_kwh", "charge_kwh", "charge_cost",
+                  "charge_kwh_priced"):
             b[k] = round(b[k], 2)
         b["drive_min"] = int(round(b["drive_min"]))
         for g in ("home", "public"):
@@ -4905,8 +5009,12 @@ def get_monthly_report(month: Optional[str] = None) -> dict:
             "efficiency": eff_d,
         }
 
-    avg_price = (round(cur["charge_cost"] / cur["charge_kwh"], 3)
-                 if cur["charge_kwh"] > 0 and cur["has_cost"] else None)
+    # Over the priced charges alone — dividing by charge_kwh (which counts the unpriced ones too)
+    # under-reported the month's price; one untagged charge out of ten was worth −20%.
+    price_cov = price_coverage(cur["charge_cost"] if cur["has_cost"] else None,
+                               cur["charge_kwh_priced"], cur["charge_count_priced"],
+                               cur["charge_count"])
+    avg_price = price_cov["avg_price"]
 
     ndays = calendar.monthrange(int(month[:4]), int(month[5:7]))[1]
     daily = [{"day": d,
@@ -4921,7 +5029,7 @@ def get_monthly_report(month: Optional[str] = None) -> dict:
         "next_month": newer[-1] if newer else None,
         "months": [{"key": m, "label": _label(m)} for m in months_desc],
         "cur": cur, "prev": prev, "prev_label": _label(prev_key) if prev else None,
-        "deltas": deltas, "avg_price": avg_price, "daily": daily,
+        "deltas": deltas, "avg_price": avg_price, "price_cov": price_cov, "daily": daily,
     }
 
 
