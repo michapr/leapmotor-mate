@@ -1020,6 +1020,7 @@ async def statistics(request: Request):
     totals["reev_total"] = db_reader.reev_total_consumption() if _reev else None
     # …and beside it what was actually bought, which Mate measures rather than derives.
     totals["reev_spend"] = db_reader.reev_actual_spend() if _reev else None
+    totals["reev_cost"] = db_reader.reev_cost_per_100km() if _reev else None
     return templates.TemplateResponse(request, "statistics.html", _ctx(
         page="statistics", vehicle=vehicle,
         grouped=grouped, totals=totals,

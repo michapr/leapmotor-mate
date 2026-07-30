@@ -50,6 +50,8 @@
     "stats_reev_spend_label": "Charges and refuels",
     "stats_reev_spend_note": "at the meter, plus the refuels you entered",
     "stats_reev_spend_nofuel": "no refuels entered yet",
+    "stats_reev_cost_label": "Cost per 100km",
+    "stats_reev_cost_note": "at the average price paid",
     "reev_engine_consumption_note": "How much fuel the range-extender burns when it actually runs — from your own trips, not the cloud's all-km average (which a mostly-electric REEV dilutes to near zero).",
     "reev_no_data_title": "No fuel data",
     "reev_no_data": "This view is for range-extender (REEV) models. If you have a REEV and just set it up, the sensors appear after the next poll.",
