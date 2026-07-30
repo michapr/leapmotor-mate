@@ -47,8 +47,8 @@
    range-extender trip on purpose (a SoC drop stops measuring efficiency once the generator is
    refilling the pack underneath), which leaves the cost question unanswered on exactly the long
    trips that cost the most. From @michapr's proposal; see db_reader.reev_total_consumption. #}
-{% if totals.reev_total or totals.reev_spend %}
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+{% if totals.reev_total or totals.reev_spend or totals.reev_cost %}
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
   {# Left: derived from the car's own gauges. Deliberately NOT called a consumption — the
      efficiency cards above are consumptions, this is the socket's share of them plus the fuel,
      and a smaller number sitting under the word "consumption" reads as a defect. #}
@@ -90,6 +90,30 @@
       {% if not totals.reev_spend.has_fuel_entries %}
       · <span class="text-amber-500">{{ t('stats_reev_spend_nofuel') }}</span>
       {% endif %}
+    </div>
+  </div>
+  {% endif %}
+  {# Third: the same €/100km yardstick as the efficiency cards up top, priced at the
+     weighted-average rate actually paid — see db_reader.reev_cost_per_100km. #}
+  {% if totals.reev_cost %}
+  <div class="card">
+    <div class="stat-label">{{ t('stats_reev_cost_label') }}</div>
+    <div class="flex items-baseline gap-1 flex-wrap">
+      {% if totals.reev_cost.total_cost_100km is not none %}
+      <span class="stat-value text-white">{{ totals.reev_cost.total_cost_100km | money }}</span>
+      <span class="text-slate-400 text-sm">/100km</span>
+      {% else %}
+      <span class="stat-value text-slate-500">—</span>
+      {% endif %}
+    </div>
+    <div class="text-slate-500 text-xs mt-1 flex flex-wrap gap-x-2">
+      {% if totals.reev_cost.elec_cost_100km is not none %}
+      <span class="text-sky-400">{{ totals.reev_cost.elec_cost_100km | money }}</span>
+      {% endif %}
+      {% if totals.reev_cost.fuel_cost_100km is not none %}
+      <span class="text-amber-400">{{ totals.reev_cost.fuel_cost_100km | money }}</span>
+      {% endif %}
+      <span>{{ t('stats_reev_cost_note') }}</span>
     </div>
   </div>
   {% endif %}

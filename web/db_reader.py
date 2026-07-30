@@ -3097,6 +3097,63 @@ def reev_actual_spend() -> Optional[dict]:
     }
 
 
+def reev_cost_per_100km() -> Optional[dict]:
+    """REEV — cost normalized to the same yardstick the efficiency cards already use: €/100km.
+
+    reev_total_consumption (kWh/100km + L/100km) and reev_actual_spend (total € bought) answer two
+    different questions on two different bases — one is per-trip consumption, the other is
+    purchases over a period, and the docstring above spells out why those two never simply divide
+    into each other (charge tonight, drive next week). This card doesn't divide spend by this
+    period's km either. It prices the trip-consumption side (same total_kwh/total_fuel_l as the
+    gauges card) at the weighted-average rate actually paid across all recorded charges/refuels —
+    same blending the Trips calendar already uses for per-trip cost. That keeps the "/100km" honest
+    (it is still driving, not buying) while the price behind it is real, not assumed.
+
+    None of the two prices exist without at least one priced charge or one priced refuel; either
+    side is left out (not zeroed) when its own price is unknown, so a REEV with electric-only
+    charging still gets an electricity-only €/100km rather than a misleadingly low blended one."""
+    total = reev_total_consumption()
+    if not total:
+        return None
+    db = _get()
+    try:
+        charges = [dict(r) for r in db.execute(
+            "SELECT energy_added_kwh, ac_energy_kwh, location_type, cost FROM charges "
+            "WHERE vehicle_id = COALESCE(?, vehicle_id) AND ended_at IS NOT NULL AND cost IS NOT NULL",
+            (_current_vehicle_id(),)).fetchall()]
+    except sqlite3.Error:
+        charges = []
+    kwh_paid = sum(_billed_kwh(c) for c in charges)
+    elec_cost = sum(c["cost"] for c in charges if c.get("cost"))
+    avg_elec_rate = (elec_cost / kwh_paid) if kwh_paid > 0 else None
+
+    litres_paid, fuel_cost = 0.0, 0.0
+    try:
+        _ensure_fuel_purchases(db)
+        r = db.execute(
+            "SELECT COALESCE(SUM(liters), 0) AS l, COALESCE(SUM(total_cost), 0) AS c "
+            "FROM fuel_purchases WHERE vehicle_id = COALESCE(?, vehicle_id) AND total_cost IS NOT NULL",
+            (_current_vehicle_id(),)).fetchone()
+        litres_paid, fuel_cost = (r["l"] or 0), (r["c"] or 0)
+    except sqlite3.Error:
+        pass
+    avg_fuel_rate = (fuel_cost / litres_paid) if litres_paid > 0 else None
+
+    if avg_elec_rate is None and avg_fuel_rate is None:
+        return None
+
+    elec_100 = (total["kwh_100km"] * avg_elec_rate) if avg_elec_rate is not None else None
+    fuel_100 = (total["fuel_l_100km"] * avg_fuel_rate) if avg_fuel_rate is not None else None
+    total_100 = None
+    if elec_100 is not None or fuel_100 is not None:
+        total_100 = round((elec_100 or 0) + (fuel_100 or 0), 2)
+    return {
+        "elec_cost_100km": round(elec_100, 2) if elec_100 is not None else None,
+        "fuel_cost_100km": round(fuel_100, 2) if fuel_100 is not None else None,
+        "total_cost_100km": total_100,
+    }
+
+
 def _trip_blended_rate_fn():
     """Blended €/kWh-over-time lookup, built once from ALL priced charges (same basis as
     get_trip_detail's own per-trip rate) — shared by the Trips calendar and search so every
