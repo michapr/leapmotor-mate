@@ -3,6 +3,78 @@
 All notable changes to LeapMotor Mate are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.1.0] — 2026-07-30
+
+### Added
+- **The price behind a trip's cost is now on screen.** A trip is costed at the average price of the
+  energy in the battery when it started — every priced charge counted in proportion to the charge
+  it added, so a tank filled half at home and half at a fast charger sits somewhere between the two.
+  Mate has computed that rate since per-trip costs shipped and simply never printed it, which left
+  the € with no way to check it short of redoing the arithmetic. It now appears under the cost on a
+  trip, and under the battery on the Overview, where it is the rate your **next** trip will be
+  costed at. Hover either for what moves it: charging does, driving never does. Asked for by
+  **@riri19** (#200), whose description of the mechanism was exactly right.
+
+### Fixed
+- **The unit on *Best efficiency* was as large and as green as the number.** The `eff` filter hands
+  back value and unit as one string, so `18.5 kWh/100km` went into the tile as a single lump and the
+  unit inherited the number's size and colour — while *Avg consumption*, sitting right beside it,
+  already set its unit small and grey. Both now match. Spotted by **@adoewa** (#199).
+- **Two figures on a trip no longer sit at different heights.** Those cells are 130px wide, so
+  whether a label wraps depends on the language: *Energia consumata* takes two lines where *Consumo
+  medio* takes one, and the value below simply followed, leaving one number 18px lower than the one
+  next to it while the rows above and below lined up. Every label in that grid now reserves the same
+  two lines. The consumption unit is a step smaller there too — at the shared size `16.5 kWh/100km`
+  did not fit the column and the unit dropped onto its own line, the same orphaned look as above.
+
+## [3.0.0] — 2026-07-30
+
+> Nothing in this release breaks anything: no setting changes meaning, no data is migrated, and an
+> existing install updates in place as always.
+
+### Added
+- **Dutch — Mate now speaks seven languages.** The whole application: every page, the setup wizard,
+  the login screen and the maintenance schedule. It is not a partial translation to be finished
+  later — all 1117 strings are in, and a test now refuses any language that falls short of the
+  others. Choosing it: **Settings ▸ Language & Currency**, or the flag on the first setup screen,
+  which also picks Dutch by itself when the browser asks for it. Asked for by **@adoewa** (#187).
+  A handful of labels are shorter than the literal translation on purpose — *Km-stand*, *Stand*,
+  *Airco-doel* — because Dutch compounds are long and those three sit in fixed-width tiles where
+  the full word was cut off. Every page was checked at desktop and phone width before release.
+
+### Fixed
+- **The Maintenance page was in English for Polish users, and always had been.** That page keeps
+  its own dictionary inside `maintenance.py`, separate from the locale files, and Polish was never
+  added to it — the community translation (**@irek**, PR #90) covered the locale files, which is
+  where anyone would look. Nothing ever failed: a missing key falls back to English, silently, and
+  no test reached that file. All 62 service items, categories and phrases are now in Polish, and
+  the page title matches the sidebar the way it does in every other language.
+- **The trip count in Statistics read "trips" in every language.** The year and month rows had the
+  word hardcoded in the template, so Italian showed *58 trips* and German *58 trips*. Both rows now
+  use the same singular/plural handling as the Trips calendar — *58 viaggi*, *58 Fahrten*,
+  *58 ritten*, and *1 viaggio* when there is one.
+
+## [2.19.3] — 2026-07-30
+
+### Fixed
+- **A charge with no position can be given a station name again.** The ✏️ free-text name (v2.17.0) was added at the end of a block guarded by *the charge must have coordinates* — a condition that belongs to the 🔄 lookup beside it, which searches OSM/OCM **around a point** and genuinely cannot run without one. Typing a name never needed it. So the pencil was hidden from exactly the charges that had no other way to be labelled: the ones entered by hand or imported from CSV, which carry no position by construction, and the ones the car recorded with **no GPS fix**, stored as 0,0. The two conditions are now separate. HOME still shows neither — naming your own wallbox as a public station means nothing. Reported by **@adoewa** (#197), who found it the only way anybody could: with older charges he had typed in himself.
+
+## [2.19.2] — 2026-07-30
+
+### Fixed
+- **One tank of fuel is one refuel again.** A float gauge does not jump to the final level — it climbs there in steps, and the car reports every one. Measured on **@pdifeo**'s C10 (beta #17): 70.2 → 78.0 → 87.0 → 98.1 → 100.0 % in twenty-eight seconds. Mate read those pairwise and filed each rise as its own refuel, so one fill-up showed up as **three**. It now follows the fill while the level keeps climbing and records it once, absorbing the small final step as well — that step is under the detection floor, and dropping it was costing nine tenths of a litre off every full tank. His fill reads 33.390 → 47.500 L, one row. Tuning the floor could never have fixed this: raise it and you still get three, lower it and you get four. **This affects every REEV owner, not only beta testers** — the Refuels page is in the public release. As a bonus his tank reads 47.500 L at 100 %, confirming the C10 capacity correction from v2.14.1 on a second car.
+
+### Changed
+- The comment describing when a charge session closes said it "only CLOSES when the cable is pulled". Measured on a real car over one night: when a load-balancing wallbox stops the current, the car reports the cable **gone** — so the session does close, and a single plug-in was recorded as six charges. Behaviour is unchanged; the comment now states what the data says, so the next reader does not inherit a false premise.
+
+## [2.19.1] — 2026-07-30
+
+### Added
+- **Home Assistant can now see how old the car's data really is.** Two new MQTT sensors: **Data Timestamp**, the clock the *car* put on the frame it last sent, and **Data Age**, the seconds since. The existing *Last Seen* is when **Mate** last wrote a row — it stays a few seconds old for as long as the cloud keeps answering, even when what the cloud is answering with is half an hour stale. That gap is the whole point: it is the difference between a car that is genuinely parked and a car that stopped reporting while it was moving. Both go out **without** the driving-or-charging condition the Overview applies, because an automation should apply its own. Empty rather than 1970 on a car that doesn't report its clock. Asked for by **@riri19** (#178).
+
+### Fixed
+- **The kilometres driven before the cloud caught up are no longer lost.** When a car sets off somewhere without coverage, the cloud keeps re-serving the last frame it holds — gear P, speed 0 — so Mate stayed parked through the opening kilometres and then opened the trip with the odometer read *after* them. Those kilometres, and the energy that moved them, were dropped: the odometer-jump reconstruction couldn't catch them either, because it hands over to the live trip in the same poll. The trip is now anchored to the last reading taken before it, so the distance and the consumption are right. Its start time and start point are deliberately left alone — when the car set off is unknown, and a frozen frame's GPS is routinely 0,0. Reported by **@riri19** (#130, #129). No effect at all where the cloud link is healthy: measured against 303 real trips, none was touched.
+
 ## [2.19.0] — 2026-07-30
 
 ### Added
