@@ -26,7 +26,7 @@ import auth
 import security
 import update_check
 
-MATE_VERSION = "2.15.0"  # bump together with the git tag + add-on config.yaml at release
+MATE_VERSION = "3.4.3"  # bump together with the git tag + add-on config.yaml at release
 
 import diagnostics
 import demo
@@ -80,6 +80,22 @@ def _repair_manual_charge_timezones() -> None:
         pass
 
 
+def _pin_auto_timezone() -> None:
+    """Runs BEFORE the repair below, and the order is the point: the repair refuses to convert while
+    the zone is Auto (it will not bake in a guess), so an install left on Auto could never have its
+    old hand-entered rows put right. Pinning the resolved zone first gives the repair the answer it
+    was waiting for. Safe either way — local_to_utc_iso is a no-op on a value that already carries a
+    zone, so rows written after v2.12.1 cannot be shifted twice."""
+    try:
+        name = db_reader.pin_auto_timezone()
+        if name:
+            log.info("Time zone was on Automatic and is now recorded as %s — nothing moved, "
+                     "but what you type is no longer anchored to an unnamed clock", name)
+    except Exception:  # noqa: BLE001 — never block startup over a migration
+        pass
+
+
+_pin_auto_timezone()
 _repair_manual_charge_timezones()
 
 app = FastAPI(title="LeapMotor Mate")
@@ -121,11 +137,12 @@ def _money(x) -> str:
 templates.env.filters["money"] = _money
 
 
-def _price_l(x) -> str:
-    """A per-litre fuel price: fixed 3 decimals with the UI-language decimal separator (comma for
-    it/fr/de, dot for en), no currency symbol \u2014 the template appends ' <sym>/L'. Fuel is quoted to
-    3 decimals (1,858 \u20ac/L): unlike `nice` this keeps them, and unlike a bare number it follows the
-    same comma/dot rule as `money` (a price is a monetary value)."""
+def _price_3(x) -> str:
+    """A UNIT price \u2014 \u20ac/L at the pump, \u20ac/kWh at the plug: fixed 3 decimals with the UI-language
+    decimal separator (comma for it/fr/de, dot for en), no currency symbol \u2014 the template appends
+    ' <sym>/L' or ' <sym>/kWh'. Both are quoted to 3 decimals in the real world (1,858 \u20ac/L,
+    0,250 \u20ac/kWh) and `money`'s 2 would flatten 0,250 and 0,199 onto 0,25 and 0,20. Unlike `nice`
+    this keeps the decimals, and unlike a bare number it follows `money`'s comma/dot rule."""
     if x is None:
         return "\u2014"
     s = f"{float(x):,.3f}"
@@ -133,7 +150,7 @@ def _price_l(x) -> str:
         s = s.translate(str.maketrans({",": ".", ".": ","}))
     return s
 
-templates.env.filters["pricel"] = _price_l
+templates.env.filters["price3"] = _price_3
 
 
 def _localdate(s) -> str:
@@ -446,6 +463,7 @@ async def overview(request: Request):
         v2l=db_reader.get_v2l_status(),
         charge_limit=_configured_charge_limit(),
         car_resp=db_reader.command_responsiveness(),
+        battery_price=db_reader.current_blended_price(),   # #200 — must match /api/status-card
     ))
 
 
@@ -465,8 +483,9 @@ async def trips_page(request: Request, highlight: int = 0):
     return templates.TemplateResponse(request, "trips.html", _ctx(
         page="trips", vehicle=vehicle,
         total=total, highlight=highlight, summary=summary,
-        merge_gap_default=db_reader.TRIP_MERGE_GAP_DEFAULT,
-        merge_gap_min=db_reader.TRIP_MERGE_GAP_MIN, merge_gap_max=db_reader.TRIP_MERGE_GAP_MAX,
+        # No merge_gap_* here any more: the slider moved into the day drawer, which gets them
+        # from the day route (#204). The page keeps only #merge-modal, which lives outside the
+        # swapped calendar area so the drawer's 🔗 preview still has somewhere to open.
         cal_year=cal_year, cal_month=cal_month, cal_open_day=cal_open_day,
         cal_years=db_reader.get_trip_years(),
     ))
@@ -519,17 +538,30 @@ async def trips_calendar(request: Request, year: int = 0, month: int = 0, open_d
 
 
 @app.get("/api/trips/calendar/day", response_class=HTMLResponse)
-async def trips_calendar_day(request: Request, year: int, month: int, day: int):
-    """One day's trips for the Month view's day drawer, with that day's own totals (#175)."""
+async def trips_calendar_day(request: Request, year: int, month: int, day: int,
+                             merge: int = 0, gap: int = db_reader.TRIP_MERGE_GAP_DEFAULT):
+    """One day's trips for the Month view's day drawer, with that day's own totals (#175).
+
+    `merge=1` swaps that list for THIS day's mergeable pairs, each with the 🔗 connector between
+    them, and keeps the max-stop slider (#204 @riri19). The pairs used to live in their own
+    all-history view that replaced the whole calendar — which is how they lost the date: the
+    drawer's heading already says which day this is, so under it a row needs only its clock."""
     lang = db_reader.get_language()
     from datetime import date
+    d = date(year, month, day)
+    gap = max(db_reader.TRIP_MERGE_GAP_MIN, min(db_reader.TRIP_MERGE_GAP_MAX, gap))
     day_trips = db_reader.get_trips_calendar_day(year, month, day)
     return templates.TemplateResponse(request, "partials/trips_calendar_day.html", {
         "t": i18n.get_t(lang), "fmt_dur": _fmt_dur,
         "is_reev": db_reader.get_setting("is_reev", "0") == "1", "research": research.research_enabled(),
         "trips": day_trips,
         "day_totals": db_reader.trips_totals(day_trips),
-        "day_label": i18n.fmt_day_month_year(lang, date(year, month, day)),
+        "day_label": i18n.fmt_day_month_year(lang, d),
+        # The drawer builds its own 🔗 / slider URLs, so it needs the day back as three numbers.
+        "year": year, "month": month, "day": day,
+        "merge_mode": bool(merge), "gap": gap,
+        "candidates": db_reader.get_merge_candidates(gap, day=d) if merge else [],
+        "merge_gap_min": db_reader.TRIP_MERGE_GAP_MIN, "merge_gap_max": db_reader.TRIP_MERGE_GAP_MAX,
     })
 
 
@@ -560,26 +592,19 @@ async def trips_search(request: Request, q: str = "", drive_mode: str = "",
         km_min=units.dist_to_km(n_km_min), km_max=units.dist_to_km(n_km_max),
         eff_min=n_eff_min, eff_max=n_eff_max, duration_min=n_duration_min, duration_max=n_duration_max,
         date_from=date_from, date_to=date_to)
+    # The same split Ricariche got in #191, which Viaggi never got: a result standing on its own has
+    # to say WHICH DAY it was — a hit read "17:52 → 18:15" and nothing more. Set the label HERE, in
+    # the search route only, and let the row print it when it's there. Unconditionally in the row
+    # and the calendar's day drawer starts repeating its own heading underneath itself, once per
+    # trip — the same reason merging moved INTO the drawer rather than carrying its own dates (#204).
+    for t in trips:
+        dt = db_reader._local_dt(t.get("started_at"))
+        t["date_label"] = i18n.fmt_day_month_year(lang, dt) if dt else None
     today = db_reader.today_local()
     return templates.TemplateResponse(request, "partials/trips_search_results.html", {
         "t": i18n.get_t(lang), "fmt_dur": _fmt_dur,
         "is_reev": db_reader.get_setting("is_reev", "0") == "1", "research": research.research_enabled(),
         "trips": trips, "year": year or today.year, "month": month or today.month,
-    })
-
-
-@app.get("/api/trips/merge-candidates", response_class=HTMLResponse)
-async def trips_merge_candidates(request: Request, gap: int = db_reader.TRIP_MERGE_GAP_DEFAULT):
-    """Viaggi 🔗 button (HTMX partial) — replaces the calendar with the (typically few) actual
-    mergeable pairs across all history, independent of whichever month is currently browsed."""
-    gap = max(db_reader.TRIP_MERGE_GAP_MIN, min(db_reader.TRIP_MERGE_GAP_MAX, gap))
-    lang = db_reader.get_language()
-    return templates.TemplateResponse(request, "partials/trip_merge_candidates.html", {
-        "t": i18n.get_t(lang), "fmt_dur": _fmt_dur,
-        "is_reev": db_reader.get_setting("is_reev", "0") == "1", "research": research.research_enabled(),
-        "candidates": db_reader.get_merge_candidates(gap), "gap": gap,
-        "merge_gap_default": db_reader.TRIP_MERGE_GAP_DEFAULT,
-        "merge_gap_min": db_reader.TRIP_MERGE_GAP_MIN, "merge_gap_max": db_reader.TRIP_MERGE_GAP_MAX,
     })
 
 
@@ -638,8 +663,14 @@ async def trip_detail(request: Request, trip_id: int):
     trip = db_reader.get_trip_detail(trip_id)
     if not trip:
         return RedirectResponse(request.headers.get("x-ingress-path", "") + "/trips")
+    # Same server-side currency formatting the Map gives its charging-station popups (main.py's
+    # map_page) — a bare .toFixed(2) in the map script would show "13.00" with no symbol.
+    for c in trip["charges"]:
+        c["cost_fmt"] = _money(c["cost"]) if c.get("cost") is not None else None
+    adjacent = db_reader.get_adjacent_trips(trip_id)
     return templates.TemplateResponse(request, "trip_detail.html", _ctx(
         page="trips", vehicle=vehicle, trip=trip,
+        prev_trip_id=adjacent["prev_id"], next_trip_id=adjacent["next_id"],
     ))
 
 
@@ -730,9 +761,16 @@ async def trip_convert_ec(request: Request, trip_id: int):
         # Actionable (amber): merging the two trips would recover the data.
         return HTMLResponse(f'<span class="text-amber-400 text-xs">⚠️ {t("ec_convert_merged")}</span>')
     if res.get("reason") == "shared_session":
-        # Actionable (amber): the car was never powered off, so the cloud bundles these trips into one
-        # session — merging them lets Mate convert the combined drive over its full distance.
-        return HTMLResponse(f'<span class="text-amber-400 text-xs">⚠️ {t("ec_convert_shared")}</span>')
+        # Actionable (amber): Mate reads these trips as one power-on session, so the official figure
+        # covers them together — merging lets it convert the combined drive over its full distance.
+        # Name the other trips by their start time (beta #19): "the adjacent one" doesn't say which,
+        # and @michapr's was the previous one. The list also carries the count for free, so a session
+        # holding three trips no longer describes itself in the singular.
+        from html import escape as _escape          # module-local elsewhere in this file
+        _times = [c for c in (db_reader.trip_local_start_hhmm(i)
+                              for i in res.get("other_ids") or []) if c]
+        return HTMLResponse(f'<span class="text-amber-400 text-xs">⚠️ '
+                            f'{_escape(t("ec_convert_shared").format(trips=", ".join(_times)))}</span>')
     if res.get("reason") == "implausible":
         # The cloud returned a value, but it's an incomplete aggregation (would imply an impossible
         # efficiency). Calm tone: the reliable SoC estimate above is deliberately kept, nothing broke.
@@ -1000,6 +1038,13 @@ async def charges_search(request: Request, q: str = "", type: str = "",
         text=q, charge_type=type, cost_min=n_cost_min, cost_max=n_cost_max,
         kwh_min=n_kwh_min, kwh_max=n_kwh_max, date_from=date_from, date_to=date_to,
         station=station or None)
+    # #191 (@riri19): a result card shows "16:38 → 16:42" and nothing else — in the calendar the
+    # day is the heading above it, but a search result stands alone and the day was simply gone.
+    # He searched "Intermarché", found the session, and had to go back to the calendar to learn
+    # WHEN. Same day label the history tree uses, so the two views read alike.
+    for c in charges:
+        dt = db_reader._local_dt(c.get("started_at"))
+        c["date_label"] = i18n.fmt_day_month_year(lang, dt) if dt else None
     today = db_reader.today_local()
     return templates.TemplateResponse(request, "partials/charges_search_results.html", {
         "t": i18n.get_t(lang), "charge_types": db_reader.CHARGE_TYPES, "fmt_dur": _fmt_dur,
@@ -1449,7 +1494,16 @@ async def map_page(request: Request):
         min_sessions = max(1, int(db_reader.get_setting("map_station_min_sessions", "1")))
     except (TypeError, ValueError):
         min_sessions = 1
-    stations = db_reader.get_charging_stations(min_sessions=min_sessions)
+    # How many station markers to draw (get_charging_stations' top_n), set from the box on the
+    # map's own legend row rather than buried in Settings. READ ONLY here — the box POSTs to
+    # save_map_station_count and comes back through a redirect, so the page that renders the
+    # map never writes anything.
+    try:
+        stations_top_n = max(0, int(db_reader.get_setting("map_station_top_n", "15")))
+    except (TypeError, ValueError):
+        stations_top_n = 15
+    stations = db_reader.get_charging_stations(
+        min_sessions=min_sessions, top_n=None if stations_top_n == 0 else stations_top_n)
     # Popup markup is built client-side from this JSON (see map.html), so the currency symbol/
     # placement/decimal-separator formatting `| money` gives every other cost on the site has to be
     # baked in server-side here too — a bare .toFixed(2) in JS would show "13.00" with no symbol.
@@ -1459,6 +1513,7 @@ async def map_page(request: Request):
             c["cost_fmt"] = _money(c["cost"]) if c["cost"] is not None else None
     return templates.TemplateResponse(request, "map.html", _ctx(
         page="map", vehicle=vehicle, track=track, places=places, stations=stations,
+        stations_top_n=stations_top_n,
     ))
 
 
@@ -2555,6 +2610,28 @@ async def cancel_charge_location(request: Request, charge_id: int):
                                       {"charge": charge or {"id": charge_id}, "t": t})
 
 
+@app.post("/api/charges/{charge_id}/locate/manual", response_class=HTMLResponse)
+async def set_manual_charge_location(request: Request, charge_id: int):
+    """✏️ free-text station name — for a station OSM/OCM simply doesn't have (#193:
+    "Where to add stationname"). No coordinates/URL involved, just the label the
+    automatic lookup could never produce on its own. Persists through
+    set_charge_location_name exactly like a picked candidate would — location_name
+    IS NOT NULL either way, so the background sweep (_LOCATION_CANDIDATES_WHERE) never
+    revisits this charge. An empty submission changes nothing (closes the input with
+    whatever was already saved, same as clicking away)."""
+    form = await request.form()
+    name = (form.get("name") or "").strip()[:200]
+    charge = db_reader.get_charge_location(charge_id)
+    if not charge:
+        return HTMLResponse("", status_code=404)
+    if name:
+        db_reader.set_charge_location_name(charge_id, name, None)
+        charge["location_name"], charge["location_url"] = name, None
+    t = i18n.get_t(db_reader.get_language())
+    return templates.TemplateResponse(request, "partials/charge_location.html",
+                                      {"charge": charge, "t": t})
+
+
 def _wallbox_overlay(curve: dict, charge_id: int) -> list | None:
     """Wallbox power (from HA history) resampled onto the car curve's timestamps,
     so it overlays the car's DC power on the same axis. None when unavailable.
@@ -2939,6 +3016,24 @@ async def save_map_station_threshold(request: Request):
     return HTMLResponse(f'<span style="color:#22c55e;font-size:13px">{t("map_station_threshold_saved")}</span>')
 
 
+@app.post("/api/settings/map-station-count")
+async def save_map_station_count(request: Request):
+    """How many station markers the Map draws (get_charging_stations' top_n); 0 = all of them.
+    Set from the box on the map's own legend row, but a POST like its twin above — a GET that
+    writes a stored preference is re-applied by every bookmark, Back button and link prefetch
+    that touches the URL, and on a shared install one person's link would change everyone's map.
+    Redirects back to the map (POST-Redirect-GET) so the new marker set is simply what the page
+    renders next. Clamped: the box is the only way in, but a hand-typed number shouldn't be
+    stored verbatim any more than the threshold's 1–10 is."""
+    form = await request.form()
+    try:
+        n = max(0, min(999, int(form.get("top_n") or 0)))
+    except (TypeError, ValueError):
+        n = 15
+    db_reader.set_setting("map_station_top_n", str(n))
+    return RedirectResponse(request.headers.get("x-ingress-path", "") + "/map", status_code=303)
+
+
 @app.post("/api/settings/retention", response_class=HTMLResponse)
 async def save_retention(request: Request):
     """Save GPS-sample retention (positions_retention_days; 0 = keep forever). The poller
@@ -3238,7 +3333,7 @@ async def set_language(request: Request):
     (HX-Refresh) so every server-rendered string switches to the new language."""
     form = await request.form()
     lang = form.get("language", "en")
-    db_reader.set_setting("language", lang if lang in ("en", "it", "fr", "de", "pl", "pt-PT") else "en")
+    db_reader.set_setting("language", lang if lang in ("en", "it", "fr", "de", "pl", "pt-PT", "nl") else "en")
     return Response(status_code=204, headers={"HX-Refresh": "true"})
 
 
@@ -3391,6 +3486,7 @@ async def status_card(request: Request):
     return templates.TemplateResponse(request, "partials/status_card.html", _ctx(
         status=status, vehicle=vehicle,
         car_resp=db_reader.command_responsiveness(),
+        battery_price=db_reader.current_blended_price(),   # #200 — must match the overview route
     ))
 
 
@@ -4773,6 +4869,10 @@ async def setup_page(request: Request):
     return templates.TemplateResponse(request, "setup.html", {
         "battery_options": battery_options_for_build(),
         "research": research.research_enabled(),
+        # Asked here, pre-filled with what Mate detected — see the note in setup_submit. The full
+        # grouped list is the same one Settings uses, so the two pickers can never diverge.
+        "tz_options": db_reader.timezone_options(),
+        "tz_detected": db_reader.detected_tz_name(),
     })
 
 
@@ -4895,6 +4995,12 @@ async def setup_submit(request: Request):
     car_type = (form.get("car_type", "") or "").strip().upper()
     is_reev  = "1" if form.get("is_reev") in ("1", "on", "true") else "0"
     vin      = (form.get("vin", "") or "").strip()
+    # The zone is asked here, pre-filled with the one detected, because leaving it implicit is what
+    # cost @ghuaywen-ai 150 charges seven hours out (#181): a time you type is anchored to whatever
+    # clock Mate happens to be running on, and on a bare container that is UTC. On Home Assistant
+    # the detected value is already right and this is one more Next; on plain Docker the field reads
+    # "UTC" and says so, which is the whole point of showing it.
+    tz       = (form.get("timezone", "") or "").strip()
 
     if not user or not pwd or not pin:
         t = i18n.get_t(lang)
@@ -4918,7 +5024,12 @@ async def setup_submit(request: Request):
     db_reader.set_secret("leapmotor_pin", pin)
     db_reader.set_setting("battery_capacity_kwh", str(battery_kwh))
     db_reader.set_setting("is_reev", is_reev)   # REEV variant selected in the wizard → gates fuel features
-    db_reader.set_setting("language", lang if lang in ("en", "it", "fr", "de", "pl", "pt-PT") else "en")
+    db_reader.set_setting("language", lang if lang in ("en", "it", "fr", "de", "pl", "pt-PT", "nl") else "en")
+    # set_timezone validates against the tz database and falls back to Auto on anything unknown, so
+    # a tampered field cannot wedge every date render. Marked as pinned either way, so the startup
+    # migration never comes back and overwrites a fresh answer with the container's clock.
+    db_reader.set_timezone(tz or db_reader.detected_tz_name())
+    db_reader.set_setting(db_reader.TZ_PINNED_KEY, "1")
 
     # Pre-populate vehicles table so the UI shows model info before the first poller run
     if vin and car_type:

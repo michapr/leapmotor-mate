@@ -87,6 +87,23 @@
       font-weight: 700;
       color: white;
     }
+    /* A grid of label+value pairs whose values must line up across a row. The label is what
+       varies: in a narrow cell it wraps in some languages and not in others, and since the
+       value simply follows it, one value ended up 18px lower than the one beside it. Reserving
+       the two-line height for every label in the grid puts them back on a shared baseline.
+       3em = two lines at this font-size and line-height, so it follows the type rather than a
+       hard-coded pixel count. Scoped to .stat-pairs: .stat-label itself is used all over the
+       app, mostly where nothing wraps and the extra height would only add slack. */
+    .stat-pairs .stat-label { min-height: 3em; }
+    /* A fixed 3-up row of counters leaves each tile about 100px on a phone, and the label inside
+       is one uppercase word that cannot wrap. Dutch BINNENKORT measures 83px there, so it touches
+       both edges — which reads as badly centred rather than merely tight, and is what @adoewa
+       reported (#201); it IS centred, it just has no room. Italian IN SCADENZA needs 87px and is
+       worse. Below 480px the tracking goes and the type drops a notch, buying back ~15px. Scoped
+       to .stat-tiles so no other .stat-label in the app changes. */
+    @media (max-width: 480px) {
+      .stat-tiles .stat-label { font-size: 0.7rem; letter-spacing: 0; }
+    }
     .bg-slate-750 { background: rgb(36 49 65); }
 
     /* ── Trips tree ─────────────────────────────────────────────── */
@@ -406,7 +423,8 @@
     {% endif %}
     {% if research %}
     <!-- BetaTester banner — sticky at the top of EVERY page. Warns that stats/costs/trips can be
-         skewed (REEV not integrated yet) and that data-inconsistency issues should NOT be opened. -->
+         skewed (REEV not integrated yet), and asks for reports of things that look BROKEN — an
+         event counted twice, a duplicate row — as opposed to figures that merely look off. -->
     <div style="position:sticky;top:0;z-index:1006;background:#7c3aed;color:#fff;
          display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px;
          padding:8px 14px;font-size:12.5px;font-weight:600;line-height:1.4;text-align:center;

@@ -3,6 +3,331 @@
 All notable changes to LeapMotor Mate are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.4.3] — 2026-08-01
+
+### Changed
+- **The BetaTester banner told testers not to report anything, and one of them almost didn't.**
+  Every page of the beta build carried a single instruction — *"do NOT open issues about
+  inconsistent data"* — written to hold back a flood of *"my costs look wrong"* on a REEV, which is
+  expected while REEV behaviour isn't integrated. It held back more than that. A tester found a
+  real defect — **one refuel filed three times**, in code that ships in the **public** build, so
+  every REEV owner was seeing it — and wrote it as an afterthought at the bottom of a report about
+  something else, because, in his words, *"it says all over the place not to report data
+  inconsistencies"*.
+
+  The banner now draws the line where it belongs. A figure that merely looks off still needs no
+  issue; anything that looks **broken** — an event counted twice, a duplicate row, a value that
+  cannot be true — is worth reporting. The same split replaces the old sentence on the one-time
+  consent screen. All seven languages. The beta repository's issue form, its acknowledgement
+  checkbox, both READMEs, the add-on documentation, the consent notice and the add-on store
+  description carried the same discouragement in seven more places and now say the same thing.
+  _(beta #17, @pdifeo.)_
+
+## [3.4.2] — 2026-07-31
+
+### Fixed
+- **The shared-session message now says WHICH trips, instead of "the adjacent one".** When Mate
+  can't separate a trip's official figure from its neighbours it asks you to merge them — and named
+  the neighbour as *"the adjacent one"*, which says neither *previous* nor *next* nor *how many*.
+  The reporter had to come back and ask which trip was meant; his was the previous one. The message
+  now lists the other trips by their start time, so a session holding three of them no longer
+  describes itself in the singular either. All seven languages. _(beta #19, @michapr.)_
+
+## [3.4.1] — 2026-07-31
+
+### Fixed
+- **Merging two trips could throw away the petrol one of them burned.** On a range-extender, a
+  merged trip took its fuel readings from the **parent row alone** — and the parent is the *earlier*
+  of the two. Merge a short electric hop with the long generator-on drive that followed it and the
+  group inherited the hop's untouched tank: the litres vanished, the ⛽ marker went with them, and
+  the trip's cost fell from **7.53 € to 0.50 €** because only the electricity was still being
+  counted. Distance, duration, SoC, regen and elevation had always spanned the whole group; fuel had
+  simply never been added to that list, and it now spans it the same way — first segment's reading
+  at the start, last segment's at the end, skipping segments that carry none.
+
+  Nothing was lost from the database: the segments kept their own readings throughout, so every
+  merged trip already in your history reports its fuel again with no re-recording, and unmerging was
+  never necessary. The same figure feeds the trips list, so the ⛽ marker returns there too.
+  _(beta #20, reported by @michapr — who hit it by following Mate's own advice to merge.)_
+
+## [3.4.0] — 2026-07-31
+
+### Added
+- **A trip that ends with more charge than it started now says so, instead of showing nothing.** On a
+  range-extender the generator can put back more than the motor took out; the energy tile on such a
+  trip was simply empty. It was not a hidden value — the number is computed when the trip closes and
+  then discarded, because a consumption per hundred kilometres means nothing while the pack is being
+  refilled mid-drive, and that rule is right. So the tile now carries the **battery's net change**
+  with its sign: `−2.9 kWh` where the pack ended fuller. Derived from the trip's own SoC pair, so
+  every trip already recorded has it, with no migration and nothing to re-record.
+
+  It is deliberately **not** the same figure as the consumption beside it: that one is the gross
+  energy that left the pack, which stays positive even on a trip you finished with more charge. Both
+  are true, they answer different questions, and putting a minus sign on the second would have been
+  the wrong number under the right label. Where the pack drained normally, the net stays out — the
+  consumption figure already says it, and one trip should not print two energy numbers.
+  _(beta #11, reported by @michapr and @gm27271.)_
+
+### Changed
+- **"From the car's own gauges" now reads "Measured by the car".** The old wording made the figure
+  sound like a second opinion when it is the energy you actually have to put back in. All seven
+  languages. _(beta #11, @michapr.)_
+
+## [3.3.1] — 2026-07-31
+
+### Fixed
+- **A message about your car said something Mate cannot know.** When the official per-trip figure
+  can't be separated from the neighbouring trip, Mate offered to merge them and explained why with
+  *"the car was never switched off between this trip and the adjacent one"* — a statement about the
+  vehicle, presented as fact. A range-extender owner showed it was false for him: his raw signals
+  have the car going off at 07:55:21 and back on at 07:56:33, a real 72-second switch-off between
+  two drives. Mate saw it and discarded it, because it ignores power-off dips shorter than 90
+  seconds — the signal does blip, and a blip would otherwise split one drive in two. His was the
+  only one of 28 power-offs in three weeks to fall below that line; the next shortest was 120
+  seconds. The threshold stays: measured against a dense signal log, lowering it to 45 seconds
+  rewrites the session of 175 trips out of 300, and two attempts to tell a blip from a brief
+  switch-off structurally didn't separate them. So the wording changed instead, to what Mate can
+  actually back — that it reads the two trips as one power-on session and the official figure
+  covers both. Same advice, no claim about your car. All seven languages.
+- **A known power state is no longer carried forward for ever.** Reconstructing that session means
+  reusing the last reported power state across polls that didn't carry one, which is right for a
+  missed reading and wrong for hours of silence: on a car that reports the signal rarely, one
+  reading could keep meaning "still on" straight across a genuine power-off. It now expires after
+  fifteen minutes, or three polls if you have widened the parked interval, and expires into
+  "unknown" rather than "off" — a value nobody read is not evidence the car was switched off.
+  No effect where the signal is dense: on a full-electric log carrying it in 89.8% of rows, all 60
+  most recent trips reconstruct identically.
+
+## [3.3.0] — 2026-07-31
+
+### Changed
+- **Merging two trips now happens inside the day, under the date.** The 🔗 button moved off the top
+  of the page and sits beside the day's heading, appearing only once a day is open: press it and the
+  calendar stays where it is while that day's list narrows to just the pairs you could join, gap
+  slider and all. Before, it replaced the whole calendar with every joinable pair in your history —
+  and a trip row prints a clock, not a date, so twenty-two pairs arrived as bare times with nothing
+  saying which day any of them was. Two of them began at 17:52 and 17:53, weeks apart, four rows
+  from each other. The day's heading already says the date; the pairs now sit under it.
+  _(#204, reported by @riri19.)_
+
+### Added
+- **A trip you found by searching now says which day it was.** A result stands on its own — there is
+  no calendar heading above it — and it showed only `17:52 → 18:15`, so the one thing you were
+  missing was the one thing you had to go back to the calendar for. Charges learned this in v2.16.0;
+  Trips never did. The date appears on search results only: in the day drawer it would repeat the
+  heading directly above it, once per trip.
+
+## [3.2.1] — 2026-07-31
+
+### Added
+- **Setup now asks for your time zone, pre-filled with the one it detected.** It is the only
+  setting whose default can be silently wrong, and the wizard never asked: Mate simply used
+  whatever clock it was running on. On Home Assistant that is your own zone and this is one more
+  field to skip past; on a bare Docker container it is **UTC**, and now it says so — in the open,
+  before there is any data to anchor wrongly. The full zone list, in all seven languages.
+
+### Fixed
+- **"Automatic" was never wrong so much as unrecorded, and that is what made it dangerous.** Times
+  you type are anchored to the zone in force at that moment; on Automatic the setting stayed empty,
+  so a charge you entered or imported was pinned to a clock nobody had named. The repair that puts
+  such rows back **refuses to run without a chosen zone** — correctly, it will not bake in a guess —
+  so those installs could never be corrected either. If the container ran on neither UTC nor your
+  real zone, the offset stayed in for good.
+
+  On update, Automatic is turned into the zone it was already resolving to, and written down.
+  **Nothing moves and no time on your screen changes** — it is the same zone, now named. Two things
+  follow: the old hand-entered rows can finally be repaired, and the setting stops silently
+  following the container, so changing Home Assistant's zone no longer re-interprets what you typed.
+  Pick a different one whenever you like; that has always worked and still does.
+
+  Found while closing **@ghuaywen-ai**'s #181, whose 150 imported charges went in seven hours late
+  and took three releases to put right. This is the fourth, and the one that stops it happening to
+  the next person.
+
+## [3.2.0] — 2026-07-31
+
+> ⚠️ **If you have a wallbox meter configured, the cost of your past trips goes up on update —
+> by around 8%.** Nothing was lost and nothing is being recalculated wrongly: money you had already
+> spent was simply landing on no trip at all. The first entry below explains exactly which money.
+> No setting changes meaning, no data is migrated, and nothing else in the app moves.
+
+### Changed
+- **A trip is now costed on the energy that reached the battery, not on the energy the meter
+  billed.** These are not the same number. Charge at home and the wallbox counts what left the
+  wall; the car's on-board charger turns 8-15% of it into heat, and only the rest arrives in the
+  pack. Mate was dividing what you paid by the meter's figure, then applying that rate to energy
+  taken *out of the battery* — so the kilowatt-hours lost in the charger, real money off your bill,
+  were charged to no trip at all and the trips of a month never added up to the month's
+  electricity. The divisor is now the energy that actually reached the pack.
+
+  Measured on a real 302-trip history: **77,52 € becomes 83,90 €**, and 243 of those trips move.
+  Only home charges **with a wallbox reading** are affected — every other charge already had one
+  figure and not two, because without a meter there is nothing to disagree with.
+
+  Trip costs have never been stored: they are worked out from the charge history each time a page
+  is drawn, which is what lets a price corrected months later fix every trip after it. That same
+  property is why this correction reaches the whole history at once rather than only new charges.
+
+  **What is shown on the Charges page does not change.** The kWh on a charge card, the period
+  totals and the €/kWh there still come from the meter, because there the question is what you paid
+  at the wall — a different question with a different right answer.
+
+### Added
+- **Range-extender: the electricity you bought is now spent, and can run out.** A REEV's battery
+  takes energy from two places but money from one. The socket adds kilowatt-hours *and* euros; the
+  generator adds kilowatt-hours only — those were already paid for in litres, on the very trip that
+  burned them. Mate used to price the pack at a rate that charges raised and nothing ever consumed,
+  so an owner who charges once a month paid grid rate for a month of petrol-made kilowatt-hours.
+
+  Now what you bought is a stock that depletes: trips draw on it in order, and once it is gone the
+  electric line of a trip is **0,00 €** — not a fading remainder, zero, because there is nothing
+  left that you paid for. Charge 28 kWh and drive 10 a day and the electricity is spent on day
+  three, exactly as it is in the car. A trip shows how much of what left the pack had been bought
+  and how much came from the generator. From the discussion opened by **@michapr**, with
+  **@gm27271**.
+
+- **The tank on the Overview now shows litres, not only a percentage.** Range-extender build only.
+  The figure comes from the car's own litre counter, which makes it the better of the two: the
+  percentage is a float gauge, and converting it would need the tank capacity — something Mate
+  assumes per model rather than measures. Mate has been reading that counter since v2.14.1 and no
+  page had ever printed it. Asked for by **@rop12770** (#202).
+- **A range-extender trip shows what it cost.** The cost tile keyed off the electric figure alone,
+  so a trip run on a tank of petrol showed a dash while the fuel € sat in the block below it. It
+  now shows electricity plus fuel, with both parts under it.
+
+### Fixed
+- **Mate was telling range-extender owners something untrue about their own consumption.** The note
+  under the dual-energy block said the electric figure came from the car's metered `getEC` rather
+  than the battery percentage, *because a running generator recharges the pack mid-drive*. Measured
+  against two cars' data, `getEC` is roughly what **left the battery** — what the generator sends
+  straight to the wheels never passes through the pack and is invisible to it. One week of driving
+  reads 645 km against 20 kWh, which no car can do. The note now says what the number is, in all
+  seven languages. It remains the right figure for the **cost** — what came out of the pack has to
+  be paid for — and the wrong one for the **consumption**.
+- **Maintenance item names were being cut off on a phone.** Each name was held to a single line and
+  truncated with an ellipsis — fine on a desktop, where they all fit, and unusable on a phone: after
+  the icon and the two buttons a name has roughly 165px, and 19 of the 20 Dutch names are wider than
+  that. *Verlichting, claxon, ruitenwissers — controleren* needs 351px, more than double the room it
+  had, so what you actually read was *Verlichting, claxon…*. Names now wrap and the card grows to
+  fit. Reported by **@adoewa** (#201).
+- **The three counters at the top of Maintenance had no room for their labels.** They sit in a fixed
+  three-across row, so on a phone each tile is about 100px wide and the label inside is a single
+  uppercase word that cannot wrap: Dutch *BINNENKORT* measured 83px and touched both edges, which
+  looks like bad centring rather than a tight fit. It was centred — it simply had nowhere to go.
+  Below 480px the letter-spacing goes and the type drops a notch, which is enough for every
+  language. Italian *IN SCADENZA* needed 87px and did not fit at all, so this was ours too and
+  nobody had said so.
+- **Dutch: *recuperatie* is now *regeneratie***, in all five places it appears. Corrected by
+  **@adoewa**, who translated the language in the first place and then went back over it.
+
+## [3.1.0] — 2026-07-30
+
+### Added
+- **The price behind a trip's cost is now on screen.** A trip is costed at the average price of the
+  energy in the battery when it started — every priced charge counted in proportion to the charge
+  it added, so a tank filled half at home and half at a fast charger sits somewhere between the two.
+  Mate has computed that rate since per-trip costs shipped and simply never printed it, which left
+  the € with no way to check it short of redoing the arithmetic. It now appears under the cost on a
+  trip, and under the battery on the Overview, where it is the rate your **next** trip will be
+  costed at. Hover either for what moves it: charging does, driving never does. Asked for by
+  **@riri19** (#200), whose description of the mechanism was exactly right.
+
+### Fixed
+- **The unit on *Best efficiency* was as large and as green as the number.** The `eff` filter hands
+  back value and unit as one string, so `18.5 kWh/100km` went into the tile as a single lump and the
+  unit inherited the number's size and colour — while *Avg consumption*, sitting right beside it,
+  already set its unit small and grey. Both now match. Spotted by **@adoewa** (#199).
+- **Two figures on a trip no longer sit at different heights.** Those cells are 130px wide, so
+  whether a label wraps depends on the language: *Energia consumata* takes two lines where *Consumo
+  medio* takes one, and the value below simply followed, leaving one number 18px lower than the one
+  next to it while the rows above and below lined up. Every label in that grid now reserves the same
+  two lines. The consumption unit is a step smaller there too — at the shared size `16.5 kWh/100km`
+  did not fit the column and the unit dropped onto its own line, the same orphaned look as above.
+
+## [3.0.0] — 2026-07-30
+
+> Nothing in this release breaks anything: no setting changes meaning, no data is migrated, and an
+> existing install updates in place as always.
+
+### Added
+- **Dutch — Mate now speaks seven languages.** The whole application: every page, the setup wizard,
+  the login screen and the maintenance schedule. It is not a partial translation to be finished
+  later — all 1117 strings are in, and a test now refuses any language that falls short of the
+  others. Choosing it: **Settings ▸ Language & Currency**, or the flag on the first setup screen,
+  which also picks Dutch by itself when the browser asks for it. Asked for by **@adoewa** (#187).
+  A handful of labels are shorter than the literal translation on purpose — *Km-stand*, *Stand*,
+  *Airco-doel* — because Dutch compounds are long and those three sit in fixed-width tiles where
+  the full word was cut off. Every page was checked at desktop and phone width before release.
+
+### Fixed
+- **The Maintenance page was in English for Polish users, and always had been.** That page keeps
+  its own dictionary inside `maintenance.py`, separate from the locale files, and Polish was never
+  added to it — the community translation (**@irek**, PR #90) covered the locale files, which is
+  where anyone would look. Nothing ever failed: a missing key falls back to English, silently, and
+  no test reached that file. All 62 service items, categories and phrases are now in Polish, and
+  the page title matches the sidebar the way it does in every other language.
+- **The trip count in Statistics read "trips" in every language.** The year and month rows had the
+  word hardcoded in the template, so Italian showed *58 trips* and German *58 trips*. Both rows now
+  use the same singular/plural handling as the Trips calendar — *58 viaggi*, *58 Fahrten*,
+  *58 ritten*, and *1 viaggio* when there is one.
+
+## [2.19.3] — 2026-07-30
+
+### Fixed
+- **A charge with no position can be given a station name again.** The ✏️ free-text name (v2.17.0) was added at the end of a block guarded by *the charge must have coordinates* — a condition that belongs to the 🔄 lookup beside it, which searches OSM/OCM **around a point** and genuinely cannot run without one. Typing a name never needed it. So the pencil was hidden from exactly the charges that had no other way to be labelled: the ones entered by hand or imported from CSV, which carry no position by construction, and the ones the car recorded with **no GPS fix**, stored as 0,0. The two conditions are now separate. HOME still shows neither — naming your own wallbox as a public station means nothing. Reported by **@adoewa** (#197), who found it the only way anybody could: with older charges he had typed in himself.
+
+## [2.19.2] — 2026-07-30
+
+### Fixed
+- **One tank of fuel is one refuel again.** A float gauge does not jump to the final level — it climbs there in steps, and the car reports every one. Measured on **@pdifeo**'s C10 (beta #17): 70.2 → 78.0 → 87.0 → 98.1 → 100.0 % in twenty-eight seconds. Mate read those pairwise and filed each rise as its own refuel, so one fill-up showed up as **three**. It now follows the fill while the level keeps climbing and records it once, absorbing the small final step as well — that step is under the detection floor, and dropping it was costing nine tenths of a litre off every full tank. His fill reads 33.390 → 47.500 L, one row. Tuning the floor could never have fixed this: raise it and you still get three, lower it and you get four. **This affects every REEV owner, not only beta testers** — the Refuels page is in the public release. As a bonus his tank reads 47.500 L at 100 %, confirming the C10 capacity correction from v2.14.1 on a second car.
+
+### Changed
+- The comment describing when a charge session closes said it "only CLOSES when the cable is pulled". Measured on a real car over one night: when a load-balancing wallbox stops the current, the car reports the cable **gone** — so the session does close, and a single plug-in was recorded as six charges. Behaviour is unchanged; the comment now states what the data says, so the next reader does not inherit a false premise.
+
+## [2.19.1] — 2026-07-30
+
+### Added
+- **Home Assistant can now see how old the car's data really is.** Two new MQTT sensors: **Data Timestamp**, the clock the *car* put on the frame it last sent, and **Data Age**, the seconds since. The existing *Last Seen* is when **Mate** last wrote a row — it stays a few seconds old for as long as the cloud keeps answering, even when what the cloud is answering with is half an hour stale. That gap is the whole point: it is the difference between a car that is genuinely parked and a car that stopped reporting while it was moving. Both go out **without** the driving-or-charging condition the Overview applies, because an automation should apply its own. Empty rather than 1970 on a car that doesn't report its clock. Asked for by **@riri19** (#178).
+
+### Fixed
+- **The kilometres driven before the cloud caught up are no longer lost.** When a car sets off somewhere without coverage, the cloud keeps re-serving the last frame it holds — gear P, speed 0 — so Mate stayed parked through the opening kilometres and then opened the trip with the odometer read *after* them. Those kilometres, and the energy that moved them, were dropped: the odometer-jump reconstruction couldn't catch them either, because it hands over to the live trip in the same poll. The trip is now anchored to the last reading taken before it, so the distance and the consumption are right. Its start time and start point are deliberately left alone — when the car set off is unknown, and a frozen frame's GPS is routinely 0,0. Reported by **@riri19** (#130, #129). No effect at all where the cloud link is healthy: measured against 303 real trips, none was touched.
+
+## [2.19.0] — 2026-07-30
+
+### Added
+- **A trip's own map now marks where you charged at the end of it.** Same amber marker as the Map's stations, with a popup carrying the kWh, the cost and a link straight to the charge. What counts as "this trip's stop" is a time window — from this trip's end to the moment the car next moved — so no GPS guesswork is involved: the car cannot have charged anywhere else in between. Charges at your own wallbox are left out, or every drive home would earn a "charging stop" for parking in the driveway.
+- **‹ › buttons on a trip, to step to the one before or after.** Chronological, through the same trips the Trips list shows: a merged trip has no page of its own, so the arrows skip past it to somewhere you can actually land. A trip with nothing on one side simply doesn't show that arrow.
+- **The Map's station cap is adjustable from the map itself.** It has always drawn the 15 busiest spots; someone who charges in many one-off places could see an older single visit pushed out by newer ones. A small box on the legend row now sets it — 0 shows them all. Both features and the box come from **@hubcasale** (#195).
+
+### Fixed
+- A charge the car reported with **no GPS fix** is stored as latitude 0, longitude 0 — which is not the same as *missing*, and the new trip marker took it at face value: on the test data one landed **5 132 km** away, in the Gulf of Guinea, on a trip that never left Milan. It now uses the same guard the Map's station cluster has always used, where 0 counts as absent.
+- The station-count box saves through a POST rather than a URL parameter. A page that writes a stored preference just by being loaded gets re-triggered by every bookmark, Back button and link prefetch that touches it — and on an install two people share, one person's link would change the other's map. The value is clamped too, like the marker-threshold setting next to it.
+
+## [2.18.0] — 2026-07-30
+
+### Added
+- **The Charges page now tells you what a kWh actually costs you.** A sixth card next to the totals: your spend divided by the energy you paid for, quoted to three decimals — the one number that turns "I spent 101 €" into something you can compare against a tariff, a public charger or a litre of petrol. Asked for by **@adoewa** in #187, and it turned out he was asking for something Mate could already work out but only showed one month at a time, on another page.
+- The card says what it covers. A charge with no cost yet — one you haven't tagged, or of a type you haven't priced — still has kWh, so leaving it in the division would report a price lower than the one you pay. It is left out, and a line under the number says so: *"25 of 26 sessions"*. Without that line the page would show a total energy and a total spend that divide into a **different** number from the one printed beside them, and nothing to explain the gap.
+
+### Fixed
+- **The monthly Report's "Avg price" was under-reporting, sometimes badly.** It divided the month's spend by the month's *total* energy, unpriced charges included. On the test data a single untagged charge out of ten was enough to show **0.199 €/kWh** for a month whose real price was **0.250** — a fifth off, and plausible enough that nobody would question it. Both places now compute the average the same way, from one function, so they cannot drift apart.
+- The Report also quoted that price with two decimals, which flattens 0.250 and 0.199 onto 0.25 and 0.20 — hiding both the error and the correction. Prices per kWh now keep three decimals, like the per-litre prices already did.
+
+## [2.17.0] — 2026-07-29
+
+### Added
+- **You can now type a charging station's name yourself.** Every station name in Mate comes from OpenStreetMap and Open Charge Map, and some real stations are in neither: a company car park or any charger behind a barrier is invisible to both **by design**, so the 🔄 lookup could only ever come back empty on them — exactly **@adoewa**'s case in #193. A **✏️** button next to the lookup opens a small field: type the name, press ✓, done. It opens pre-filled with the current name, so it doubles as a quick correction; an empty submission changes nothing; and a typed name takes the charge out of the background lookup queue exactly like a found one would. One thing worth knowing: 🔄 still re-runs the database lookup and replaces the name when it finds exactly one match — press it only when a re-lookup is what you want. Written overnight by **@hubcasale** (#194), on top of yesterday evening's release, with all six languages covered.
+
+## [2.16.0] — 2026-07-29
+
+### Added
+- **The Scheduling page now says what your car is actually doing, before the form that changes it.** Both cards open with a line in plain words — *"Charges every day from 00:50 to 12:00, up to 100%"*, *"Quick cool once only at 07:00, 18°C"* — built from the car's own answer, with no extra call. **@riri19** selected all seven days of his charge schedule, saw the chips empty again after a reload and reported the schedule as lost (#190). Nothing was lost: on that card **no day selected means every day**, which is also the state every car leaves the factory in, so the row is empty for almost everyone. The chips still work the way they did — you pick the days you want rather than deselecting six of seven — but now the card says what the empty row means.
+- The same line on the **climate** card, where it was needed more: an empty day row there means the **opposite** — one time only, not every day. Two cards, one under the other, identical rows of chips, opposite meanings, and nothing on screen to tell them apart. It also spells out the mode ("Quick cool" rather than a payload), the time and the temperature, and says plainly when nothing is scheduled at all.
+- **A charge found by search now shows its date.** In the calendar the day is the heading above the cards; a search result stands alone, and it showed only "16:38 → 16:42". **@riri19** looked up a station by name and had to go back to the calendar to find out which day it was (#191). Same date format the history uses. Unchanged in the calendar, which already says it once.
+
+### Changed
+- The litres on a detected refuel now say they are yours to overwrite: *"gauge estimate — replace it with the litres on your receipt"*. The box was always editable, and the amber "≈ 35.15 L" above it reads like a figure the car produced, so people leave it. **@gm27271** worked out the consequence before hitting it: confirm 9 litres against a 10-litre receipt and the price per litre comes out 20/9 rather than the 2.00 actually paid — and that price weights the blend behind every trip that burns from that tankful. Range-extender research builds only.
+
 ## [2.15.0] — 2026-07-29
 
 ### Added

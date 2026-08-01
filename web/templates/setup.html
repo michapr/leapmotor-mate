@@ -48,6 +48,10 @@
               class="px-4 py-1.5 rounded-full text-sm font-medium border transition-all cursor-pointer">
         🇵🇹 Português (Portugal)
       </button>
+      <button type="button" onclick="setLang('nl')" id="btn-nl"
+              class="px-4 py-1.5 rounded-full text-sm font-medium border transition-all cursor-pointer">
+        🇳🇱 Nederlands
+      </button>
     </div>
     <h1 id="setup-title" class="text-2xl font-bold text-white mb-1">Welcome to LeapMotor Mate</h1>
     <p id="setup-subtitle" class="text-slate-400 text-sm">Configure your vehicle connection to get started</p>
@@ -178,6 +182,32 @@
           </svg>
         </button>
       </div>
+
+    {# Asked once, here, pre-selected with what Mate detected. It is the only setting whose default
+       can be silently wrong: a bare Docker container runs on UTC, and a time you type is anchored
+       to whatever clock Mate is on — which is how @ghuaywen-ai's 150 imported charges landed seven
+       hours late (#181). On Home Assistant the detected value is already right and this is one more
+       field to skip past; on plain Docker it reads UTC, in the open, where it can be corrected
+       before there is any data to anchor wrongly. #}
+    <div>
+      <label id="lbl-tz" for="inp-tz" class="block text-sm font-medium text-slate-300 mb-1.5">
+        Time zone
+      </label>
+      <select name="timezone" id="inp-tz"
+              class="w-full px-4 py-3 rounded-xl bg-slate-800 border border-slate-600 text-white
+                     focus:outline-none focus:border-brand text-sm">
+        {% for region, zones in (tz_options or {}).items() %}
+        <optgroup label="{{ region }}">
+          {% for value, label in zones %}
+          <option value="{{ value }}"{% if value == tz_detected %} selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+      <p id="hint-tz" class="mt-1.5 text-xs text-slate-500">
+        Trips and charges are shown in this zone. Detected: {{ tz_detected }} — change it if that isn't where you are.
+      </p>
+    </div>
     </div>
 
     <!-- Detect button -->
@@ -201,6 +231,8 @@
 </div>
 
 <script>
+  // Il fuso rilevato dal server: l'unico pezzo di quella frase che non e' traduzione.
+  const TZ_DETECTED = {{ (tz_detected or 'UTC') | tojson }};
 // ── Battery options ─────────────────────────────────────────────────────────
 // Rendered from the server's map (battery_options_for_build), already filtered for this build —
 // deliberately not a hand-kept copy, so this list can never drift from what detect-vehicle answers.
@@ -220,6 +252,8 @@ const strings = {
     password:      "Password",
     pin:           "Operation PIN",
     pinPh:         "4-digit PIN",
+    tz:            "Time zone",
+    tzHint:        "Trips and charges are shown in this zone. Detected: {tz} — change it if that isn't where you are.",
     detectBtn:     "🔍 Detect My Car",
     detecting:     "⏳ Detecting…",
     detected:      "Car detected",
@@ -258,6 +292,8 @@ const strings = {
     password:      "Password",
     pin:           "PIN operativo",
     pinPh:         "PIN a 4 cifre",
+    tz:            "Fuso orario",
+    tzHint:        "Viaggi e ricariche sono mostrati in questo fuso. Rilevato: {tz} — cambialo se non è dove ti trovi.",
     detectBtn:     "🔍 Rileva la mia auto",
     detecting:     "⏳ Rilevamento…",
     detected:      "Auto rilevata",
@@ -296,6 +332,8 @@ const strings = {
     password:      "Mot de passe",
     pin:           "Code PIN d'opération",
     pinPh:         "PIN à 4 chiffres",
+    tz:            "Fuseau horaire",
+    tzHint:        "Les trajets et les recharges s'affichent dans ce fuseau. Détecté : {tz} — changez-le si ce n'est pas là que vous êtes.",
     detectBtn:     "🔍 Détecter ma voiture",
     detecting:     "⏳ Détection…",
     detected:      "Voiture détectée",
@@ -334,6 +372,8 @@ const strings = {
     password:      "Passwort",
     pin:           "Bedien-PIN",
     pinPh:         "4-stellige PIN",
+    tz:            "Zeitzone",
+    tzHint:        "Fahrten und Ladevorgänge werden in dieser Zone angezeigt. Erkannt: {tz} — ändern Sie sie, wenn Sie woanders sind.",
     detectBtn:     "🔍 Mein Auto erkennen",
     detecting:     "⏳ Erkennung…",
     detected:      "Auto erkannt",
@@ -372,6 +412,8 @@ const strings = {
     password:      "Hasło",
     pin:           "PIN operacyjny",
     pinPh:         "4-cyfrowy PIN",
+    tz:            "Strefa czasowa",
+    tzHint:        "Przejazdy i ładowania są pokazywane w tej strefie. Wykryto: {tz} — zmień, jeśli to nie tam jesteś.",
     detectBtn:     "🔍 Wykryj mój samochód",
     detecting:     "⏳ Wykrywanie…",
     detected:      "Samochód wykryty",
@@ -410,6 +452,8 @@ const strings = {
     password:      "Palavra-passe",
     pin:           "PIN de operação",
     pinPh:         "PIN de 4 dígitos",
+    tz:            "Fuso horário",
+    tzHint:        "Viagens e carregamentos são mostrados neste fuso. Detetado: {tz} — altere se não for onde está.",
     detectBtn:     "🔍 Detetar o meu veículo",
     detecting:     "⏳ A detetar…",
     detected:      "Veículo detetado",
@@ -439,6 +483,46 @@ const strings = {
     demoNote:      "Apenas dados de demonstração — nada é real. Pode sair a qualquer momento.",
     demoStarting:  "A iniciar a demonstração…",
 },
+  nl: {
+    title:         "Welkom bij LeapMotor Mate",
+    subtitle:      "Kies hoe je wilt beginnen",
+    acctWarn:      "⚠️ Gebruik een Leapmotor-account dat alleen voor Mate is. Gebruik dit account niet tegelijk in een andere app, add-on, Docker of koppeling — ze gooien elkaars sessie eruit en je krijgt ontbrekende of tegenstrijdige gegevens.",
+    email:         "E-mailadres van je Leapmotor-account",
+    emailPh:       "jij@voorbeeld.nl",
+    password:      "Wachtwoord",
+    pin:           "Bedienings-pincode",
+    pinPh:         "Pincode van 4 cijfers",
+    tz:            "Tijdzone",
+    tzHint:        "Ritten en laadbeurten worden in deze zone getoond. Gedetecteerd: {tz} — wijzig het als je daar niet bent.",
+    detectBtn:     "🔍 Mijn auto zoeken",
+    detecting:     "⏳ Bezig met zoeken…",
+    detected:      "Auto gevonden",
+    carLine:       (model, vin) => `Leapmotor ${model} · VIN ···${vin.slice(-6)}`,
+    batteryLabel:  "Batterijpakket",
+    batteryHint:   "Kies je batterijvariant",
+    batteryAutoSet:"Batterij herkend (EU-uitvoering)",
+    detectFail:    "Kon het voertuig niet vinden",
+    manualEntry:   "Batterijcapaciteit met de hand invoeren (kWh)",
+    manualHint:    "B10 Pro: 56,2 · B10 Pro Max: 67,1 · T03: 37,3 · C10 RWD: 69,9 · C10 AWD: 81,9",
+    submit:        "Verbinden en starten",
+    required:      "E-mailadres, wachtwoord en pincode zijn verplicht.",
+    noBattery:     "Kies eerst een batterijvariant.",
+    certTitle:     "Stap 1 — App-certificaat",
+    certDesc:      "Mate heeft het TLS-certificaat van de Leapmotor-app nodig (voor iedereen hetzelfde, niet van jouw account). Download de twee bestanden app.crt en app.key bij:",
+    certBtn:       "Certificaat opslaan",
+    certSaving:    "⏳ Opslaan…",
+    certToPaste:   "Plak in plaats daarvan de PEM-tekst",
+    certToFile:    "Upload in plaats daarvan de bestanden",
+    certBoth:      "Zowel app.crt als app.key zijn verplicht.",
+    certSaved:     "✓ Certificaat opgeslagen",
+    certCrtLabel:  "app.crt (certificaat)",
+    certKeyLabel:  "app.key (privésleutel)",
+    setupChoice:   "Mijn auto instellen",
+    back:          "Terug",
+    demoBtn:       "De demo proberen",
+    demoNote:      "Alleen voorbeeldgegevens — niets is echt. Je kunt er altijd uit.",
+    demoStarting:  "Demo starten…",
+  },
 };
 
 let currentLang = 'en';
@@ -507,6 +591,9 @@ function setLang(lang) {
   document.getElementById('inp-email').placeholder       = s.emailPh;
   document.getElementById('lbl-password').textContent    = s.password;
   document.getElementById('lbl-pin').textContent         = s.pin;
+  document.getElementById('lbl-tz').textContent           = s.tz;
+  // il fuso rilevato lo mette il server: e' l'unico pezzo di questa frase che non e' traduzione
+  document.getElementById('hint-tz').textContent          = s.tzHint.replace('{tz}', TZ_DETECTED);
   document.getElementById('inp-pin').placeholder         = s.pinPh;
   document.getElementById('detect-label').textContent    = s.detectBtn;
   document.getElementById('submit-label').textContent    = s.submit;
@@ -529,6 +616,7 @@ function setLang(lang) {
   document.getElementById('btn-de').className = lang === 'de' ? active : inactive;
   document.getElementById('btn-pl').className = lang === 'pl' ? active : inactive;
   document.getElementById('btn-pt-PT').className = lang === 'pt-PT' ? active : inactive;
+  document.getElementById('btn-nl').className = lang === 'nl' ? active : inactive;
 }
 
 // ── Demo mode ─────────────────────────────────────────────────────────────────
@@ -786,6 +874,7 @@ const initLang = navigator.language.startsWith('it') ? 'it'
                : navigator.language.startsWith('de') ? 'de'
                : navigator.language.startsWith('pl') ? 'pl'
                : navigator.language.startsWith('pt') ? 'pt-PT'
+               : navigator.language.startsWith('nl') ? 'nl'
                : 'en';
 setLang('{{ prefill.language if prefill else "" }}' || initLang);
 
