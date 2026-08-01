@@ -3,6 +3,147 @@
 All notable changes to LeapMotor Mate are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.4.3] — 2026-08-01
+
+### Changed
+- **The BetaTester banner told testers not to report anything, and one of them almost didn't.**
+  Every page of the beta build carried a single instruction — *"do NOT open issues about
+  inconsistent data"* — written to hold back a flood of *"my costs look wrong"* on a REEV, which is
+  expected while REEV behaviour isn't integrated. It held back more than that. A tester found a
+  real defect — **one refuel filed three times**, in code that ships in the **public** build, so
+  every REEV owner was seeing it — and wrote it as an afterthought at the bottom of a report about
+  something else, because, in his words, *"it says all over the place not to report data
+  inconsistencies"*.
+
+  The banner now draws the line where it belongs. A figure that merely looks off still needs no
+  issue; anything that looks **broken** — an event counted twice, a duplicate row, a value that
+  cannot be true — is worth reporting. The same split replaces the old sentence on the one-time
+  consent screen. All seven languages. The beta repository's issue form, its acknowledgement
+  checkbox, both READMEs, the add-on documentation, the consent notice and the add-on store
+  description carried the same discouragement in seven more places and now say the same thing.
+  _(beta #17, @pdifeo.)_
+
+## [3.4.2] — 2026-07-31
+
+### Fixed
+- **The shared-session message now says WHICH trips, instead of "the adjacent one".** When Mate
+  can't separate a trip's official figure from its neighbours it asks you to merge them — and named
+  the neighbour as *"the adjacent one"*, which says neither *previous* nor *next* nor *how many*.
+  The reporter had to come back and ask which trip was meant; his was the previous one. The message
+  now lists the other trips by their start time, so a session holding three of them no longer
+  describes itself in the singular either. All seven languages. _(beta #19, @michapr.)_
+
+## [3.4.1] — 2026-07-31
+
+### Fixed
+- **Merging two trips could throw away the petrol one of them burned.** On a range-extender, a
+  merged trip took its fuel readings from the **parent row alone** — and the parent is the *earlier*
+  of the two. Merge a short electric hop with the long generator-on drive that followed it and the
+  group inherited the hop's untouched tank: the litres vanished, the ⛽ marker went with them, and
+  the trip's cost fell from **7.53 € to 0.50 €** because only the electricity was still being
+  counted. Distance, duration, SoC, regen and elevation had always spanned the whole group; fuel had
+  simply never been added to that list, and it now spans it the same way — first segment's reading
+  at the start, last segment's at the end, skipping segments that carry none.
+
+  Nothing was lost from the database: the segments kept their own readings throughout, so every
+  merged trip already in your history reports its fuel again with no re-recording, and unmerging was
+  never necessary. The same figure feeds the trips list, so the ⛽ marker returns there too.
+  _(beta #20, reported by @michapr — who hit it by following Mate's own advice to merge.)_
+
+## [3.4.0] — 2026-07-31
+
+### Added
+- **A trip that ends with more charge than it started now says so, instead of showing nothing.** On a
+  range-extender the generator can put back more than the motor took out; the energy tile on such a
+  trip was simply empty. It was not a hidden value — the number is computed when the trip closes and
+  then discarded, because a consumption per hundred kilometres means nothing while the pack is being
+  refilled mid-drive, and that rule is right. So the tile now carries the **battery's net change**
+  with its sign: `−2.9 kWh` where the pack ended fuller. Derived from the trip's own SoC pair, so
+  every trip already recorded has it, with no migration and nothing to re-record.
+
+  It is deliberately **not** the same figure as the consumption beside it: that one is the gross
+  energy that left the pack, which stays positive even on a trip you finished with more charge. Both
+  are true, they answer different questions, and putting a minus sign on the second would have been
+  the wrong number under the right label. Where the pack drained normally, the net stays out — the
+  consumption figure already says it, and one trip should not print two energy numbers.
+  _(beta #11, reported by @michapr and @gm27271.)_
+
+### Changed
+- **"From the car's own gauges" now reads "Measured by the car".** The old wording made the figure
+  sound like a second opinion when it is the energy you actually have to put back in. All seven
+  languages. _(beta #11, @michapr.)_
+
+## [3.3.1] — 2026-07-31
+
+### Fixed
+- **A message about your car said something Mate cannot know.** When the official per-trip figure
+  can't be separated from the neighbouring trip, Mate offered to merge them and explained why with
+  *"the car was never switched off between this trip and the adjacent one"* — a statement about the
+  vehicle, presented as fact. A range-extender owner showed it was false for him: his raw signals
+  have the car going off at 07:55:21 and back on at 07:56:33, a real 72-second switch-off between
+  two drives. Mate saw it and discarded it, because it ignores power-off dips shorter than 90
+  seconds — the signal does blip, and a blip would otherwise split one drive in two. His was the
+  only one of 28 power-offs in three weeks to fall below that line; the next shortest was 120
+  seconds. The threshold stays: measured against a dense signal log, lowering it to 45 seconds
+  rewrites the session of 175 trips out of 300, and two attempts to tell a blip from a brief
+  switch-off structurally didn't separate them. So the wording changed instead, to what Mate can
+  actually back — that it reads the two trips as one power-on session and the official figure
+  covers both. Same advice, no claim about your car. All seven languages.
+- **A known power state is no longer carried forward for ever.** Reconstructing that session means
+  reusing the last reported power state across polls that didn't carry one, which is right for a
+  missed reading and wrong for hours of silence: on a car that reports the signal rarely, one
+  reading could keep meaning "still on" straight across a genuine power-off. It now expires after
+  fifteen minutes, or three polls if you have widened the parked interval, and expires into
+  "unknown" rather than "off" — a value nobody read is not evidence the car was switched off.
+  No effect where the signal is dense: on a full-electric log carrying it in 89.8% of rows, all 60
+  most recent trips reconstruct identically.
+
+## [3.3.0] — 2026-07-31
+
+### Changed
+- **Merging two trips now happens inside the day, under the date.** The 🔗 button moved off the top
+  of the page and sits beside the day's heading, appearing only once a day is open: press it and the
+  calendar stays where it is while that day's list narrows to just the pairs you could join, gap
+  slider and all. Before, it replaced the whole calendar with every joinable pair in your history —
+  and a trip row prints a clock, not a date, so twenty-two pairs arrived as bare times with nothing
+  saying which day any of them was. Two of them began at 17:52 and 17:53, weeks apart, four rows
+  from each other. The day's heading already says the date; the pairs now sit under it.
+  _(#204, reported by @riri19.)_
+
+### Added
+- **A trip you found by searching now says which day it was.** A result stands on its own — there is
+  no calendar heading above it — and it showed only `17:52 → 18:15`, so the one thing you were
+  missing was the one thing you had to go back to the calendar for. Charges learned this in v2.16.0;
+  Trips never did. The date appears on search results only: in the day drawer it would repeat the
+  heading directly above it, once per trip.
+
+## [3.2.1] — 2026-07-31
+
+### Added
+- **Setup now asks for your time zone, pre-filled with the one it detected.** It is the only
+  setting whose default can be silently wrong, and the wizard never asked: Mate simply used
+  whatever clock it was running on. On Home Assistant that is your own zone and this is one more
+  field to skip past; on a bare Docker container it is **UTC**, and now it says so — in the open,
+  before there is any data to anchor wrongly. The full zone list, in all seven languages.
+
+### Fixed
+- **"Automatic" was never wrong so much as unrecorded, and that is what made it dangerous.** Times
+  you type are anchored to the zone in force at that moment; on Automatic the setting stayed empty,
+  so a charge you entered or imported was pinned to a clock nobody had named. The repair that puts
+  such rows back **refuses to run without a chosen zone** — correctly, it will not bake in a guess —
+  so those installs could never be corrected either. If the container ran on neither UTC nor your
+  real zone, the offset stayed in for good.
+
+  On update, Automatic is turned into the zone it was already resolving to, and written down.
+  **Nothing moves and no time on your screen changes** — it is the same zone, now named. Two things
+  follow: the old hand-entered rows can finally be repaired, and the setting stops silently
+  following the container, so changing Home Assistant's zone no longer re-interprets what you typed.
+  Pick a different one whenever you like; that has always worked and still does.
+
+  Found while closing **@ghuaywen-ai**'s #181, whose 150 imported charges went in seven hours late
+  and took three releases to put right. This is the fourth, and the one that stops it happening to
+  the next person.
+
 ## [3.2.0] — 2026-07-31
 
 > ⚠️ **If you have a wallbox meter configured, the cost of your past trips goes up on update —

@@ -26,7 +26,7 @@ import auth
 import security
 import update_check
 
-MATE_VERSION = "3.2.0"  # bump together with the git tag + add-on config.yaml at release
+MATE_VERSION = "3.4.3"  # bump together with the git tag + add-on config.yaml at release
 
 import diagnostics
 import demo
@@ -80,6 +80,22 @@ def _repair_manual_charge_timezones() -> None:
         pass
 
 
+def _pin_auto_timezone() -> None:
+    """Runs BEFORE the repair below, and the order is the point: the repair refuses to convert while
+    the zone is Auto (it will not bake in a guess), so an install left on Auto could never have its
+    old hand-entered rows put right. Pinning the resolved zone first gives the repair the answer it
+    was waiting for. Safe either way — local_to_utc_iso is a no-op on a value that already carries a
+    zone, so rows written after v2.12.1 cannot be shifted twice."""
+    try:
+        name = db_reader.pin_auto_timezone()
+        if name:
+            log.info("Time zone was on Automatic and is now recorded as %s — nothing moved, "
+                     "but what you type is no longer anchored to an unnamed clock", name)
+    except Exception:  # noqa: BLE001 — never block startup over a migration
+        pass
+
+
+_pin_auto_timezone()
 _repair_manual_charge_timezones()
 
 app = FastAPI(title="LeapMotor Mate")
@@ -467,8 +483,9 @@ async def trips_page(request: Request, highlight: int = 0):
     return templates.TemplateResponse(request, "trips.html", _ctx(
         page="trips", vehicle=vehicle,
         total=total, highlight=highlight, summary=summary,
-        merge_gap_default=db_reader.TRIP_MERGE_GAP_DEFAULT,
-        merge_gap_min=db_reader.TRIP_MERGE_GAP_MIN, merge_gap_max=db_reader.TRIP_MERGE_GAP_MAX,
+        # No merge_gap_* here any more: the slider moved into the day drawer, which gets them
+        # from the day route (#204). The page keeps only #merge-modal, which lives outside the
+        # swapped calendar area so the drawer's 🔗 preview still has somewhere to open.
         cal_year=cal_year, cal_month=cal_month, cal_open_day=cal_open_day,
         cal_years=db_reader.get_trip_years(),
     ))
@@ -521,17 +538,30 @@ async def trips_calendar(request: Request, year: int = 0, month: int = 0, open_d
 
 
 @app.get("/api/trips/calendar/day", response_class=HTMLResponse)
-async def trips_calendar_day(request: Request, year: int, month: int, day: int):
-    """One day's trips for the Month view's day drawer, with that day's own totals (#175)."""
+async def trips_calendar_day(request: Request, year: int, month: int, day: int,
+                             merge: int = 0, gap: int = db_reader.TRIP_MERGE_GAP_DEFAULT):
+    """One day's trips for the Month view's day drawer, with that day's own totals (#175).
+
+    `merge=1` swaps that list for THIS day's mergeable pairs, each with the 🔗 connector between
+    them, and keeps the max-stop slider (#204 @riri19). The pairs used to live in their own
+    all-history view that replaced the whole calendar — which is how they lost the date: the
+    drawer's heading already says which day this is, so under it a row needs only its clock."""
     lang = db_reader.get_language()
     from datetime import date
+    d = date(year, month, day)
+    gap = max(db_reader.TRIP_MERGE_GAP_MIN, min(db_reader.TRIP_MERGE_GAP_MAX, gap))
     day_trips = db_reader.get_trips_calendar_day(year, month, day)
     return templates.TemplateResponse(request, "partials/trips_calendar_day.html", {
         "t": i18n.get_t(lang), "fmt_dur": _fmt_dur,
         "is_reev": db_reader.get_setting("is_reev", "0") == "1", "research": research.research_enabled(),
         "trips": day_trips,
         "day_totals": db_reader.trips_totals(day_trips),
-        "day_label": i18n.fmt_day_month_year(lang, date(year, month, day)),
+        "day_label": i18n.fmt_day_month_year(lang, d),
+        # The drawer builds its own 🔗 / slider URLs, so it needs the day back as three numbers.
+        "year": year, "month": month, "day": day,
+        "merge_mode": bool(merge), "gap": gap,
+        "candidates": db_reader.get_merge_candidates(gap, day=d) if merge else [],
+        "merge_gap_min": db_reader.TRIP_MERGE_GAP_MIN, "merge_gap_max": db_reader.TRIP_MERGE_GAP_MAX,
     })
 
 
@@ -562,26 +592,19 @@ async def trips_search(request: Request, q: str = "", drive_mode: str = "",
         km_min=units.dist_to_km(n_km_min), km_max=units.dist_to_km(n_km_max),
         eff_min=n_eff_min, eff_max=n_eff_max, duration_min=n_duration_min, duration_max=n_duration_max,
         date_from=date_from, date_to=date_to)
+    # The same split Ricariche got in #191, which Viaggi never got: a result standing on its own has
+    # to say WHICH DAY it was — a hit read "17:52 → 18:15" and nothing more. Set the label HERE, in
+    # the search route only, and let the row print it when it's there. Unconditionally in the row
+    # and the calendar's day drawer starts repeating its own heading underneath itself, once per
+    # trip — the same reason merging moved INTO the drawer rather than carrying its own dates (#204).
+    for t in trips:
+        dt = db_reader._local_dt(t.get("started_at"))
+        t["date_label"] = i18n.fmt_day_month_year(lang, dt) if dt else None
     today = db_reader.today_local()
     return templates.TemplateResponse(request, "partials/trips_search_results.html", {
         "t": i18n.get_t(lang), "fmt_dur": _fmt_dur,
         "is_reev": db_reader.get_setting("is_reev", "0") == "1", "research": research.research_enabled(),
         "trips": trips, "year": year or today.year, "month": month or today.month,
-    })
-
-
-@app.get("/api/trips/merge-candidates", response_class=HTMLResponse)
-async def trips_merge_candidates(request: Request, gap: int = db_reader.TRIP_MERGE_GAP_DEFAULT):
-    """Viaggi 🔗 button (HTMX partial) — replaces the calendar with the (typically few) actual
-    mergeable pairs across all history, independent of whichever month is currently browsed."""
-    gap = max(db_reader.TRIP_MERGE_GAP_MIN, min(db_reader.TRIP_MERGE_GAP_MAX, gap))
-    lang = db_reader.get_language()
-    return templates.TemplateResponse(request, "partials/trip_merge_candidates.html", {
-        "t": i18n.get_t(lang), "fmt_dur": _fmt_dur,
-        "is_reev": db_reader.get_setting("is_reev", "0") == "1", "research": research.research_enabled(),
-        "candidates": db_reader.get_merge_candidates(gap), "gap": gap,
-        "merge_gap_default": db_reader.TRIP_MERGE_GAP_DEFAULT,
-        "merge_gap_min": db_reader.TRIP_MERGE_GAP_MIN, "merge_gap_max": db_reader.TRIP_MERGE_GAP_MAX,
     })
 
 
@@ -738,9 +761,16 @@ async def trip_convert_ec(request: Request, trip_id: int):
         # Actionable (amber): merging the two trips would recover the data.
         return HTMLResponse(f'<span class="text-amber-400 text-xs">⚠️ {t("ec_convert_merged")}</span>')
     if res.get("reason") == "shared_session":
-        # Actionable (amber): the car was never powered off, so the cloud bundles these trips into one
-        # session — merging them lets Mate convert the combined drive over its full distance.
-        return HTMLResponse(f'<span class="text-amber-400 text-xs">⚠️ {t("ec_convert_shared")}</span>')
+        # Actionable (amber): Mate reads these trips as one power-on session, so the official figure
+        # covers them together — merging lets it convert the combined drive over its full distance.
+        # Name the other trips by their start time (beta #19): "the adjacent one" doesn't say which,
+        # and @michapr's was the previous one. The list also carries the count for free, so a session
+        # holding three trips no longer describes itself in the singular.
+        from html import escape as _escape          # module-local elsewhere in this file
+        _times = [c for c in (db_reader.trip_local_start_hhmm(i)
+                              for i in res.get("other_ids") or []) if c]
+        return HTMLResponse(f'<span class="text-amber-400 text-xs">⚠️ '
+                            f'{_escape(t("ec_convert_shared").format(trips=", ".join(_times)))}</span>')
     if res.get("reason") == "implausible":
         # The cloud returned a value, but it's an incomplete aggregation (would imply an impossible
         # efficiency). Calm tone: the reliable SoC estimate above is deliberately kept, nothing broke.
@@ -4839,6 +4869,10 @@ async def setup_page(request: Request):
     return templates.TemplateResponse(request, "setup.html", {
         "battery_options": battery_options_for_build(),
         "research": research.research_enabled(),
+        # Asked here, pre-filled with what Mate detected — see the note in setup_submit. The full
+        # grouped list is the same one Settings uses, so the two pickers can never diverge.
+        "tz_options": db_reader.timezone_options(),
+        "tz_detected": db_reader.detected_tz_name(),
     })
 
 
@@ -4961,6 +4995,12 @@ async def setup_submit(request: Request):
     car_type = (form.get("car_type", "") or "").strip().upper()
     is_reev  = "1" if form.get("is_reev") in ("1", "on", "true") else "0"
     vin      = (form.get("vin", "") or "").strip()
+    # The zone is asked here, pre-filled with the one detected, because leaving it implicit is what
+    # cost @ghuaywen-ai 150 charges seven hours out (#181): a time you type is anchored to whatever
+    # clock Mate happens to be running on, and on a bare container that is UTC. On Home Assistant
+    # the detected value is already right and this is one more Next; on plain Docker the field reads
+    # "UTC" and says so, which is the whole point of showing it.
+    tz       = (form.get("timezone", "") or "").strip()
 
     if not user or not pwd or not pin:
         t = i18n.get_t(lang)
@@ -4985,6 +5025,11 @@ async def setup_submit(request: Request):
     db_reader.set_setting("battery_capacity_kwh", str(battery_kwh))
     db_reader.set_setting("is_reev", is_reev)   # REEV variant selected in the wizard → gates fuel features
     db_reader.set_setting("language", lang if lang in ("en", "it", "fr", "de", "pl", "pt-PT", "nl") else "en")
+    # set_timezone validates against the tz database and falls back to Auto on anything unknown, so
+    # a tampered field cannot wedge every date render. Marked as pinned either way, so the startup
+    # migration never comes back and overwrites a fresh answer with the container's clock.
+    db_reader.set_timezone(tz or db_reader.detected_tz_name())
+    db_reader.set_setting(db_reader.TZ_PINNED_KEY, "1")
 
     # Pre-populate vehicles table so the UI shows model info before the first poller run
     if vin and car_type:

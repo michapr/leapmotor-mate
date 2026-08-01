@@ -106,6 +106,60 @@ def local_to_utc_iso(s, tz=None):
     return dt.replace(tzinfo=tz or _local_tz()).astimezone(timezone.utc).isoformat()
 
 
+TZ_PINNED_KEY = "timezone_pinned_v1"     # one-shot: Auto turned into an explicit, recorded zone
+
+
+def detected_tz_name() -> str:
+    """The container's zone as an IANA NAME — what "Automatic" silently resolves to. 'UTC' when
+    there is nothing to read, which is what a bare Docker container actually runs on."""
+    try:
+        known = available_timezones()
+    except Exception:  # noqa: BLE001
+        known = set()
+    env = (os.environ.get("TZ") or "").strip()
+    if env and (not known or env in known):
+        return env
+    try:                                    # Debian/Alpine write the name here
+        name = Path("/etc/timezone").read_text(encoding="utf-8").strip()
+        if name and (not known or name in known):
+            return name
+    except Exception:  # noqa: BLE001
+        pass
+    try:                                    # …otherwise /etc/localtime points into the tz database
+        p = Path("/etc/localtime").resolve()
+        parts = p.parts
+        if "zoneinfo" in parts:
+            name = "/".join(parts[parts.index("zoneinfo") + 1:])
+            if name and (not known or name in known):
+                return name
+    except Exception:  # noqa: BLE001
+        pass
+    return "UTC"
+
+
+def pin_auto_timezone() -> str:
+    """One-shot: turn "Automatic" into the zone it was already resolving to, and RECORD it.
+
+    Auto was never wrong so much as UNRECORDED. `_local_tz` fell back to the container's zone while
+    the setting stayed '', so a charge you typed or imported was anchored to a clock nobody had
+    named — and `repair_manual_charge_timezones` (rightly) refuses to run without a chosen zone, so
+    it could never put those rows back either. If the container ran on neither UTC nor your real
+    zone, the offset was baked in and unrecoverable. Writing the resolved name down closes that:
+    every write from here on anchors to a zone that is known, and can be re-anchored if it changes.
+
+    Nothing moves and nobody's times change — the zone stored is exactly the one already in use.
+    What DOES change is that the setting stops following the container: on Home Assistant, altering
+    HA's zone no longer silently re-interprets what you typed. That is the point, and it is in the
+    CHANGELOG. Runs once, guarded by a flag, and never overrides an explicit choice."""
+    if get_setting("timezone", "").strip() or get_setting(TZ_PINNED_KEY, "") == "1":
+        set_setting(TZ_PINNED_KEY, "1")
+        return ""
+    name = detected_tz_name()
+    set_timezone(name)
+    set_setting(TZ_PINNED_KEY, "1")
+    return name
+
+
 def get_timezone() -> str:
     """The user's chosen IANA zone name, or '' for Auto (container/system tz). Display-only."""
     return get_setting("timezone", "")
@@ -2376,6 +2430,20 @@ def trip_ec_window(trip: dict, pad_s: int = 120):
 
 
 _READY_DEBOUNCE_S = 90        # ignore ready=0 dips shorter than this — signal blips seen in the log
+# How long a READY value may be carried forward over polls that didn't report one. The floor is
+# above the widest parked cadence the settings allow (10–600 s), so even the slowest poller keeps
+# a value across a missed reading; the 3× term keeps that margin at three polls when the user has
+# widened the interval. Beyond it the value expires — see ready_session for what that buys.
+_READY_CARRY_MIN_S = 900
+
+
+def _parked_poll_seconds() -> int:
+    """The user's parked poll interval, clamped to the same 10–600 s the settings form allows so a
+    hand-edited row can't stretch the carry window without limit."""
+    try:
+        return max(10, min(int(float(get_setting("poll_parked", "30") or 30)), 600))
+    except (TypeError, ValueError):
+        return 30
 _READY_LOOKBACK_S = 6 * 3600  # how far around the trip to scan positions for the session bounds
 
 
@@ -2398,14 +2466,30 @@ def ready_session(trip: dict):
         "SELECT recorded_at, ready FROM positions WHERE vehicle_id = COALESCE(?, vehicle_id) "
         "AND recorded_at >= ? AND recorded_at <= ? "
         "ORDER BY recorded_at", (_current_vehicle_id(), lo, hi)).fetchall()
-    samples, last = [], None
+    # Carry a known value forward across polls that didn't report one — but only for a while. The
+    # carry-forward is meant to bridge a missed poll or two; on a car that reports READY rarely it
+    # was instead becoming the only source of truth, and one ready=1 kept meaning "still on" for
+    # hours, straight across a real power-off. Measured: on a BEV, 89.8% of position rows carry a
+    # READY value and 99.9% of consecutive samples are ONE poll apart, so expiry never fires there;
+    # on michapr's REEV (beta #19) the signal arrives in ~0.8% of frames and effectively never as a
+    # zero, so the carry ran for hours and two separate drives were reported as one power-on —
+    # which told him to MERGE trips that must stay apart.
+    #
+    # Past the window the sample becomes None, not 0: "we no longer know" is the truth, and claiming
+    # "off" would be the same overreach in the other direction. None ends the ready=1 run (anything
+    # that isn't 1 does) without being picked up as an observed zero by the on_lo bracket below.
+    carry_max = max(_READY_CARRY_MIN_S, 3 * _parked_poll_seconds())
+    samples, last, last_e = [], None, None
     for r in rows:
         e = _trip_epoch(r["recorded_at"])
         if e is None:
             continue
         rd = r["ready"]
-        rd = (last if last is not None else 0) if rd is None else rd  # carry-forward unknown
-        last = rd
+        if rd is None:
+            rd = last if (last is not None and last_e is not None
+                          and e - last_e <= carry_max) else None
+        else:
+            last, last_e = rd, e
         samples.append((e, rd))
     if not any(rd for _, rd in samples):
         return None                          # no ready=1 anywhere → no session info
@@ -2777,6 +2861,16 @@ def _trip_group_stats(parent: dict, children: list) -> dict:
         d["distance_km"] = round(sum((s.get("distance_km") or 0) for s in segs), 2)
     d["duration_min"] = round(sum((s.get("duration_min") or 0) for s in segs), 1)   # DRIVING only
     d["regen_kwh"] = round(sum((s.get("regen_kwh") or 0) for s in segs), 3)
+    # Fuel spans the group exactly like SoC does — first segment's start, last segment's end (beta
+    # #20, @michapr). It used to be left on the parent row alone, and merge_trips makes the EARLIER
+    # trip the parent: merging a short electric hop with the long generator-on drive that followed it
+    # took the hop's flat tank as the whole group's, so the litres vanished and the trip's cost fell
+    # from 7.53 € to 0.50 € — the petrol simply stopped being counted. Taken from the first and last
+    # segment that actually HAS a reading rather than blindly first/last, since a segment can carry
+    # none (a BEV, or a trip recorded before the signal was read).
+    for _key, _pick in (("fuel_start_pct", segs), ("fuel_start_l", segs),
+                        ("fuel_end_pct", segs[::-1]), ("fuel_end_l", segs[::-1])):
+        d[_key] = next((s[_key] for s in _pick if s.get(_key) is not None), None)
     # Elevation is per-segment like regen_kwh, but None here means "not enriched yet" (not "zero") —
     # summing None-as-0 would show a misleading "+0 m" while some segments still await the Open-Meteo
     # sweep. Only aggregate once EVERY segment has a value; the outside temperature is the mean of the
@@ -2836,13 +2930,21 @@ def get_mergeable_pairs(gap_min: int = TRIP_MERGE_GAP_DEFAULT) -> list:
     return pairs
 
 
-def get_merge_candidates(gap_min: int = TRIP_MERGE_GAP_DEFAULT) -> list[dict]:
+def get_merge_candidates(gap_min: int = TRIP_MERGE_GAP_DEFAULT, day=None) -> list[dict]:
     """Mergeable pairs (get_mergeable_pairs) hydrated with full trip_row.html-ready data —
-    the Viaggi 🔗 button's dedicated candidates view. Previously these surfaced as inline
-    connectors between adjacent rows in the full year/month/day accordion; the calendar
-    only ever renders one day at a time, so there's no "whole page" left to scan for
-    them — this view lists just the (typically few) actual candidates instead, unrelated
-    to whichever month is currently browsed. Most-recent-first."""
+    the day drawer's 🔗 view. Previously these surfaced as inline connectors between adjacent
+    rows in the full year/month/day accordion, then as one flat all-history list when the
+    calendar replaced it; that list carried no date at all, so 22 pairs came back as bare
+    clock times and two of them (17:52 and 17:53, weeks apart) sat four rows from each other
+    — #204 @riri19. The drawer already prints the date as its heading, so the pairs moved
+    back under it.
+
+    `day` (a date) scopes them to ONE calendar day, which is what the drawer asks for; None
+    keeps every pair. A pair is anchored to the EARLIER trip's local day, so one straddling
+    midnight appears on the day the merged trip would start — the merged trip takes the
+    parent's date, so that's the day it will end up on. Measured on 302 real trips: 22 pairs
+    at the default gap, 160 at the widest, none straddling midnight — the anchor decides a
+    case that so far only exists in theory, but it has to decide it. Most-recent-first."""
     pairs = get_mergeable_pairs(gap_min)
     if not pairs:
         return []
@@ -2850,8 +2952,15 @@ def get_merge_candidates(gap_min: int = TRIP_MERGE_GAP_DEFAULT) -> list[dict]:
     out = []
     for p in pairs:
         a, b = trips_by_id.get(p["a_id"]), trips_by_id.get(p["b_id"])
-        if a and b:
-            out.append({"a": a, "b": b, "gap_min": p["gap_min"]})
+        if not (a and b):
+            continue
+        # `_dt` is the same localized field get_trips_calendar_day buckets on, so the pairs and
+        # the list under them can never disagree about which day a trip belongs to — near
+        # midnight that's the whole ballgame. (started_at is localized by now too, so slicing it
+        # would land on the same day; _dt is just the date itself instead of a string prefix.)
+        if day is not None and a["_dt"].date() != day:
+            continue
+        out.append({"a": a, "b": b, "gap_min": p["gap_min"]})
     out.sort(key=lambda p: p["b"]["started_at"], reverse=True)
     return out
 
@@ -3901,10 +4010,29 @@ def get_trip_detail(trip_id: int) -> Optional[dict]:
     dist = trip_d.get("distance_km") or 0
     trip_d["energy_kwh"] = round(eff * dist / 100, 2) if (eff and dist) else None
 
+    # NET change in the pack over the trip, signed — and only kept when the pack ended FULLER than it
+    # started (beta #11, @michapr + @gm27271). On a range-extender the generator can put back more
+    # than the motor took out; the poller computes exactly this at trip close and then discards it,
+    # because a SoC-derived consumption is meaningless once the pack is being refilled mid-drive
+    # (beta #10) — so the cell those two photographed was never a suppressed value, it was nothing at
+    # all. Derived here from the stored SoC pair rather than kept in a column, so every trip already
+    # recorded gets it without a migration.
+    #
+    # NOT the same quantity as energy_kwh above, and that is why it has its own label: energy_kwh is
+    # the GROSS energy that left the pack (getEC, when the cloud has it), which stays positive even on
+    # a trip that ended with more charge. Printing a minus sign on that one would answer the question
+    # with the wrong number. Only the negative case is surfaced: where the net is positive, the
+    # consumption figure beside it already says so, and two numbers under one word is its own defect.
+    _s0, _s1 = trip_d.get("start_soc"), trip_d.get("end_soc")
+    trip_d["battery_net_kwh"] = None
+    if _s0 is not None and _s1 is not None and _s1 > _s0:
+        trip_d["battery_net_kwh"] = round((_s0 - _s1) / 100.0 * get_battery_capacity_kwh(), 2)
+
     # REEV Phase C — per-trip fuel consumption from the fuel-tank % drop (signal 3235). L/100 km is over
     # the generator-on DRIVING distance (across every merged segment), not the whole trip → matches the car.
-    _fs, _fe = _tp.get("fuel_start_pct"), _tp.get("fuel_end_pct")
-    trip_d["fuel_start_pct"], trip_d["fuel_end_pct"] = _fs, _fe
+    # From the GROUP, not from `_tp` (the parent row): on a merged trip the parent is only the first
+    # segment, and its tank says nothing about what the later segments burned — see beta #20.
+    _fs, _fe = trip_d.get("fuel_start_pct"), trip_d.get("fuel_end_pct")
     _fbounds = db.execute(f"SELECT MIN(started_at) s, MAX(ended_at) e FROM trips WHERE id IN ({ph})",
                           seg_ids).fetchone()
     _feng = _reev_engine_on(db, trip["vehicle_id"], _fbounds["s"], _fbounds["e"])
@@ -6055,3 +6183,15 @@ def get_charging_stations(min_sessions: int = 1, top_n: Optional[int] = 15, rece
         })
     stations.sort(key=lambda s: s["sessions"], reverse=True)
     return stations if top_n is None else stations[:top_n]
+
+
+def trip_local_start_hhmm(trip_id: int) -> Optional[str]:
+    """A trip's start as HH:MM in the display time zone — for naming trips inside a message rather
+    than calling them "the adjacent one" (beta #19). None when the trip or its start is missing."""
+    row = _get().execute(
+        "SELECT started_at FROM trips WHERE id = ? AND vehicle_id = COALESCE(?, vehicle_id)",
+        (trip_id, _current_vehicle_id())).fetchone()
+    if not row or not row["started_at"]:
+        return None
+    dt = _local_dt(row["started_at"])
+    return dt.strftime("%H:%M") if dt else None
